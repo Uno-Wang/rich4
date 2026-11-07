@@ -339,10 +339,10 @@ const NPC = {
   18:{name:'定時炸彈',icon:'🧨'},
 };
 const VILLAINS = [
-  {id:0,name:'小偷',icon:'🥷',bail:30,desc:'偷取來往路人的點券給保釋者。'},
-  {id:1,name:'強盜',icon:'🔫',bail:40,desc:'搶奪路人一張卡片給保釋者；走到銀行搶劫所有人現金。'},
-  {id:2,name:'流氓',icon:'🧔',bail:40,desc:'依土地地價向地主收保護費給保釋者。'},
-  {id:3,name:'間諜',icon:'🕵️',bail:50,desc:'竊取土地上一次收取的租金、公司累積盈餘給保釋者。'},
+  {id:0,name:'小偷',icon:'🥷',bail:300,desc:'偷取來往路人的點券給保釋者。'},
+  {id:1,name:'強盜',icon:'🔫',bail:300,desc:'搶奪路人一張卡片給保釋者；走到銀行搶劫所有人現金。'},
+  {id:2,name:'流氓',icon:'🧔',bail:300,desc:'依土地地價向地主收保護費給保釋者。'},
+  {id:3,name:'間諜',icon:'🕵️',bail:300,desc:'竊取土地上一次收取的租金、公司累積盈餘給保釋者。'},
 ];
 
 // 魔法屋：條件 #0046-#0057 / 懲罰 12 種
@@ -1537,11 +1537,13 @@ async function buyStock(p, si, n, viaCash) {
   const s = G.stocks[si]; const cost = Math.round(n * s.price);
   const src = viaCash ? p.cash : p.deposit;
   if (cost > src) { if (p.human) await UI.msg('資金不足！'); return false; }
+  if (s.avail === undefined) s.avail = s.shares; if (n > s.avail) { if (p.human) await UI.msg(`市場上只剩 ${s.avail} 股！`); return false; }   // 原版 FUN_00428D2A：市場餘股
+  s.avail -= n; Sfx.play(40);
   if (viaCash) p.cash -= cost; else p.deposit -= cost;
   const h = p.stocks[si]; h.cost = (h.cost * h.q + cost) / (h.q + n); h.q += n; p._boughtNow = (p._boughtNow || 0) + n;
   log(`${p.name} 買進 ${MAP.stocks[si][0]} ${n} 股`); updateChairman(si); return true;
 }
-function sellStock(p, si, n) { const s = G.stocks[si]; const h = p.stocks[si]; n = Math.min(n, h.q); const v = Math.round(n * s.price); h.q -= n; if (!h.q) h.cost = 0; p.deposit += v; log(`${p.name} 賣出 ${MAP.stocks[si][0]} ${n} 股`); updateChairman(si); return v; }
+function sellStock(p, si, n) { const s = G.stocks[si]; const h = p.stocks[si]; n = Math.min(n, h.q); const v = Math.round(n * s.price); h.q -= n; if (s.avail === undefined) s.avail = s.shares; s.avail += n; Sfx.play(41); if (!h.q) h.cost = 0; p.deposit += v; log(`${p.name} 賣出 ${MAP.stocks[si][0]} ${n} 股`); updateChairman(si); return v; }
 async function stockMenu(p) {
   if (isWeekend(G.date)) { await UI.msg('星期例假日股市休市。'); return; }
   if (G.marketStop) { await UI.msg(`股市暫停交易\n還剩 ${G.marketStop} 天`); return; }
@@ -1630,24 +1632,29 @@ async function lottoDraw() {
 async function jailVisit(p) {
   const inJail = G.villains.filter(v => v.state === 'jail');
   const inmates = others(p).filter(q => q.status.jail > 0);
-  if (!p.human) { if (p.points >= 60 && inJail.length && Math.random() < 0.5 && p.ai >= 2) { const v = pick(inJail); p.points -= VILLAINS[v.id].bail; v.state = 'free'; v.cell = p.pos; v.bailer = p.id; v.days = 0; await UI.toast(`${p.name} 保釋 ${VILLAINS[v.id].name}`); } return; }
+  // 原版（FUN_0043E9A4）：保釋玩家 30 點、四惡人 300 點；電腦 50% 機率：乖寶寶只保玩家、普通人保玩家（1/3 機率也考慮惡人）、大老奸只保惡人；惡人需點券 >699
+  if (!p.human) {
+    if (rnd(2)) { let cands = []; if (p.ai <= 2) cands = inmates.map(q => ({ p: q })); if (p.ai === 3 || (p.ai === 2 && rnd(3) === 0)) cands = cands.concat(inJail.map(v => ({ v })));
+      if (cands.length) { const c = pick(cands); if (c.p && p.points > 30) { p.points -= 30; c.p.status.jail = 0; Voice.line(c.p, 123 + rnd(4)); await UI.toast(`${p.name} 保釋 ${c.p.name}`); } else if (c.v && p.points > 699) { p.points -= 300; c.v.state = 'free'; c.v.cell = p.pos; c.v.bailer = p.id; c.v.days = 0; await UI.toast(`${p.name} 保釋 ${VILLAINS[c.v.id].name}`); } } }
+    return;
+  }
   const opts = inJail.map(v => ({ label: `保釋${VILLAINS[v.id].name}（${VILLAINS[v.id].bail}點）`, value: 'v' + v.id, sub: VILLAINS[v.id].desc }))
-    .concat(inmates.map(q => ({ label: `保釋${q.name}（${q.status.jail * 20}點）`, value: 'p' + q.id })))
+    .concat(inmates.map(q => ({ label: `保釋${q.name}（30點）`, value: 'p' + q.id })))
     .concat([{ label: '離開', value: null }]);
   enterScene('jail', 'MIDI08');
   const sel = await UI.choose(`監獄（您有 ${p.points} 點券）`, opts);
   if (!sel) { exitScene('jail'); return; }
   if (sel[0] === 'v') { const v = G.villains[+sel.slice(1)]; if (p.points < VILLAINS[v.id].bail) { await UI.msg('抱歉！你的點數不足！'); exitScene('jail'); return; } p.points -= VILLAINS[v.id].bail; v.state = 'free'; v.cell = p.pos; v.bailer = p.id; v.days = 0; await UI.msg(`${VILLAINS[v.id].name}：太感激了！我一定會報答你的！`); }
-  else { const q = G.players[+sel.slice(1)]; const c = q.status.jail * 20; if (p.points < c) { await UI.msg('抱歉！你的點數不足！'); exitScene('jail'); return; } p.points -= c; q.status.jail = 0; Voice.line(q, 123 + rnd(4)); await UI.msg(`${q.name} 已獲保釋！`); }
+  else { const q = G.players[+sel.slice(1)]; const c = 30; if (p.points < c) { await UI.msg('抱歉！你的點數不足！'); exitScene('jail'); return; } p.points -= c; q.status.jail = 0; Voice.line(q, 123 + rnd(4)); await UI.msg(`${q.name} 已獲保釋！`); }
   exitScene('jail');
 }
 async function hospitalVisit(p) {
   const sick = others(p).filter(q => q.status.hosp > 0);
   if (!p.human || !sick.length) return;
   enterScene('hospital', 'MIDI09');
-  const sel = await UI.choose(`您好！請問您要替誰辦理出院手續？\n（您有 ${p.points} 點券）`, sick.map(q => ({ label: `${q.name}（${q.status.hosp * 20}點）`, value: q.id })).concat([{ label: '離開', value: null }]));
+  const sel = await UI.choose(`您好！請問您要替誰辦理出院手續？\n（您有 ${p.points} 點券）`, sick.map(q => ({ label: `${q.name}（30點）`, value: q.id })).concat([{ label: '離開', value: null }]));
   if (sel === null || sel === undefined) { exitScene('hospital'); return; }
-  const q = G.players[sel]; const c = q.status.hosp * 20; if (p.points < c) { await UI.msg('抱歉！你的點數不足！'); exitScene('hospital'); return; }
+  const q = G.players[sel]; const c = 30;   // 原版：出院手續 30 點（同保釋表 0x475CA4） if (p.points < c) { await UI.msg('抱歉！你的點數不足！'); exitScene('hospital'); return; }
   p.points -= c; q.status.hosp = 0; await UI.msg(`ＯＫ！您的朋友已經可以出院了！\n${q.name} 要保重身體喔！`);
   exitScene('hospital');
 }
@@ -2493,7 +2500,7 @@ const UI = {
         const si = await this.choose(v === 'b' ? '買進哪支股票？（以存款支付）' : '賣出哪支股票？', G.stocks.filter(s => !s.suspend && (v === 'b' || p.stocks[s.i].q > 0)).map(s => ({ label: `${MAP.stocks[s.i][0]}`, right: s.price.toFixed(1), value: s.i, sub: `持有 ${p.stocks[s.i].q} 股` })).concat([{ label: '取消', value: null }]));
         if (si === null || si === undefined) continue;
         const s = G.stocks[si];
-        if (v === 'b') { if (s.forced > 0) { await this.msg('漲停無法買進！'); continue; } const n = await this.number(`買進 ${MAP.stocks[si][0]}（${s.price.toFixed(1)}）股數`, Math.floor(p.deposit / s.price / 100) * 100, 100); if (n) await buyStock(p, si, n, false); }
+        if (v === 'b') { if (s.forced > 0) { await this.msg('漲停無法買進！'); continue; } const n = await this.number(`買進 ${MAP.stocks[si][0]}（${s.price.toFixed(1)}）股數\n（市場餘股 ${s.avail === undefined ? s.shares : s.avail}）`, Math.min(s.avail === undefined ? s.shares : s.avail, Math.floor(p.deposit / s.price)), 100); if (n) await buyStock(p, si, n, false); }
         else { if (s.forced < 0) { await this.msg('跌停無法賣出！'); continue; } const n = await this.number(`賣出 ${MAP.stocks[si][0]}（${s.price.toFixed(1)}）股數`, p.stocks[si].q, 100, p.stocks[si].q); if (n) sellStock(p, si, n); }
         this.updateHud();
       }
@@ -2502,13 +2509,16 @@ const UI = {
   /* ---------- 百貨公司（原版卡片店／道具店畫面） ---------- */
   async shopPanel(p) {
     this.enterScene('shop_card');
+    // 原版（FUN_0042D37F 初始化）：每次進店從庫存抽 6～15 張卡片上架（依庫存量加權、不重複超過庫存）
+    const bag = []; G.cardPool.forEach((n, id) => { for (let k = 0; k < n; k++) bag.push(id); }); const offer = []; const want = 6 + rnd(10);
+    while (offer.length < want && bag.length) { const k = rnd(bag.length); const id = bag[k]; bag.splice(k, 1); if (!offer.includes(id)) offer.push(id); }
     try {
       while (true) {
         const v = await this.choose(`歡迎光臨！有什麼我能為你服務的嗎？\n（您有 ${p.points} 點券）`, [{ label: '兌換卡片', value: 'c' }, { label: '兌換道具', value: 'i' }, { label: '賣出卡片／道具', value: 's' }, { label: '離開', value: null }]);
         if (!v) { Sfx.sayText('歡迎下次再來！'); return; }
-        if (v === 'c') { const c = await this.choose('請挑選你想要兌換的卡片。', CARDS.map(c => ({ label: c.name, right: `${c.price}點 ${G.cardPool[c.id] > 0 ? '剩' + G.cardPool[c.id] : '缺貨'}`, value: c.id, sub: helpShort(c.name) })).concat([{ label: '返回', value: null }])); if (c === null || c === undefined) continue; if (G.cardPool[c] <= 0) { await this.msg('對不起！這張卡片已經賣完了！'); continue; } if (p.points < CARDS[c].price) { await this.msg('抱歉！你的點數不足！'); continue; } if (p.cards.length >= 15) { await this.msg('對不起！您的卡片欄已滿！'); continue; } p.points -= CARDS[c].price; giveCard(p, c); Sfx.sayText('謝謝惠顧！'); this.toast(`兌換 ${CARDS[c].name}`); }
-        if (v === 'i') { this.exitScene(); this.enterScene('shop_item'); const i = await this.choose('歡迎光臨道具店！\n您要兌換什麼道具？', ITEMS.filter(i => i.buy).map(i => ({ label: i.name, icon: this.sprBox(`item${i.id}`, 1.4, 34, 34), right: `${i.price}點 ${G.itemStock[i.id] > 0 ? '剩' + G.itemStock[i.id] : '缺貨'}`, value: i.id, sub: helpShort(i.name) })).concat([{ label: '返回', value: null }])); this.exitScene(); this.enterScene('shop_card'); if (i === null || i === undefined) continue; if (G.itemStock[i] <= 0) { await this.msg('對不起！這項道具已經賣完了！'); continue; } if (p.points < ITEMS[i].price) { await this.msg('對不起，您的點券不夠！'); continue; } if (i === 4 && p.vehicle >= 1 || i === 5 && p.vehicle >= 2) { await this.msg('您已經有這種交通工具了！'); continue; } if (i < 4 || i > 5) { if ((p.items[i] || 0) >= 9) { await this.msg('很抱歉！您的道具欄已滿！'); continue; } } p.points -= ITEMS[i].price; buyItemEffect(p, i); Sfx.sayText('謝謝惠顧！'); this.toast(`兌換 ${ITEMS[i].name}`); }
-        if (v === 's') { const opts = p.cards.map((c, idx) => ({ label: CARDS[c].name, right: `售 ${Math.floor(CARDS[c].price / 2)}點`, value: 'c' + idx })).concat(Object.entries(p.items).filter(([k, n]) => n > 0).map(([k, n]) => ({ label: `${ITEMS[k].name}×${n}`, icon: this.sprBox(`item${k}`, 1.4, 34, 34), right: `售 ${Math.floor(ITEMS[k].price / 2)}點`, value: 'i' + k }))).concat([{ label: '返回', value: null }]); const s = await this.choose('賣出', opts); if (!s) continue; if (s[0] === 'c') { const idx = +s.slice(1); p.points += Math.floor(CARDS[p.cards[idx]].price / 2); discardCard(p, p.cards[idx]); } else { const k = +s.slice(1); consumeItem(p, k); p.points += Math.floor(ITEMS[k].price / 2); } }
+        if (v === 'c') { const c = await this.choose('請挑選你想要兌換的卡片。', offer.filter(id => G.cardPool[id] > 0).map(id => CARDS[id]).map(c => ({ label: c.name, right: `${c.price}點`, value: c.id, sub: helpShort(c.name) })).concat([{ label: '返回', value: null }])); if (c === null || c === undefined) continue; if (G.cardPool[c] <= 0) { await this.msg('對不起！這張卡片已經賣完了！'); continue; } if (p.points < CARDS[c].price) { await this.msg('抱歉！你的點數不足！'); continue; } if (p.cards.length >= 15) { await this.msg('對不起！您的卡片欄已滿！'); continue; } p.points -= CARDS[c].price; giveCard(p, c); Sfx.sayText('謝謝惠顧！'); this.toast(`兌換 ${CARDS[c].name}`); }
+        if (v === 'i') { this.exitScene(); this.enterScene('shop_item'); const i = await this.choose('歡迎光臨道具店！\n您要兌換什麼道具？', ITEMS.filter(i => i.buy && G.itemStock[i.id] > 0).map(i => ({ label: i.name, icon: this.sprBox(`grid${2 + i.id}`, 1.4, 34, 34), right: `${i.price}點`, value: i.id, sub: helpShort(i.name) })).concat([{ label: '返回', value: null }])); this.exitScene(); this.enterScene('shop_card'); if (i === null || i === undefined) continue; if (G.itemStock[i] <= 0) { await this.msg('對不起！這項道具已經賣完了！'); continue; } if (p.points < ITEMS[i].price) { await this.msg('對不起，您的點券不夠！'); continue; } if (i === 4 && p.vehicle >= 1 || i === 5 && p.vehicle >= 2) { await this.msg('您已經有這種交通工具了！'); continue; } if (i < 4 || i > 5) { if ((p.items[i] || 0) >= 9) { await this.msg('很抱歉！您的道具欄已滿！'); continue; } } p.points -= ITEMS[i].price; buyItemEffect(p, i); Sfx.sayText('謝謝惠顧！'); this.toast(`兌換 ${ITEMS[i].name}`); }
+        if (v === 's') { const opts = p.cards.map((c, idx) => ({ label: CARDS[c].name, right: `售 ${Math.round(CARDS[c].price * 0.9)}點`, value: 'c' + idx })).concat(Object.entries(p.items).filter(([k, n]) => n > 0).map(([k, n]) => ({ label: `${ITEMS[k].name}×${n}`, icon: this.sprBox(`grid${2 + +k}`, 1.4, 34, 34), right: `售 ${Math.round(ITEMS[k].price * 0.9)}點`, value: 'i' + k }))).concat([{ label: '返回', value: null }]); const s = await this.choose('賣出（原版：以九折點券回收）', opts); if (!s) continue; if (s[0] === 'c') { const idx = +s.slice(1); p.points += Math.round(CARDS[p.cards[idx]].price * 0.9); discardCard(p, p.cards[idx]); } else { const k = +s.slice(1); consumeItem(p, k); p.points += Math.round(ITEMS[k].price * 0.9); } }
         this.updateHud();
       }
     } finally { this.exitScene(); }
