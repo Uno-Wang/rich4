@@ -302,19 +302,20 @@ const OPT_TIME    = OPT_LEASE;
 const OPT_WIN     = [{n:'無限',k:0},{n:'資金×100',k:100},{n:'資金×50',k:50},{n:'資金×10',k:10},{n:'資金×5',k:5},{n:'資金×3',k:3}];
 
 // 12 位角色（順序＝exe／Data.mkf 精靈順序）
+// 角色範本（exe 0x47E80C，0x68 bytes／人）：pers 個性 0 乖寶寶／1 普通人／2 大老奸；loanPct 貸款比例；cashPct 資金運用比例（現金佔比）；stockPct 股票投資比例
 const CHARACTERS = [
-  {name:'約翰喬',  color:'#c0392b', sex:'M'},
-  {name:'沙隆巴斯',color:'#8e6b2c', sex:'M'},
-  {name:'忍太郎',  color:'#6a3fb5', sex:'M'},
-  {name:'錢夫人',  color:'#e84393', sex:'F'},
-  {name:'阿土伯',  color:'#7f8c3a', sex:'M'},
-  {name:'莎拉公主',color:'#ff7eb3', sex:'F'},
-  {name:'宮本寶藏',color:'#2e8b57', sex:'M'},
-  {name:'糖糖',    color:'#f0b429', sex:'F'},
-  {name:'烏咪',    color:'#e67e22', sex:'F'},
-  {name:'孫小美',  color:'#a0522d', sex:'F'},
-  {name:'小丹尼',  color:'#2f6fe0', sex:'M'},
-  {name:'金貝貝',  color:'#26c6da', sex:'M'},
+  {name:'約翰喬',  color:'#c0392b', sex:'M', pers:2, loanPct:60, cashPct:50, stockPct:30},
+  {name:'沙隆巴斯',color:'#8e6b2c', sex:'M', pers:1, loanPct:100, cashPct:40, stockPct:45},
+  {name:'忍太郎',  color:'#6a3fb5', sex:'M', pers:2, loanPct:0, cashPct:70, stockPct:0},
+  {name:'錢夫人',  color:'#e84393', sex:'F', pers:2, loanPct:100, cashPct:60, stockPct:30},
+  {name:'阿土伯',  color:'#7f8c3a', sex:'M', pers:1, loanPct:50, cashPct:40, stockPct:25},
+  {name:'莎拉公主',color:'#ff7eb3', sex:'F', pers:1, loanPct:75, cashPct:70, stockPct:30},
+  {name:'宮本寶藏',color:'#2e8b57', sex:'M', pers:1, loanPct:100, cashPct:50, stockPct:20},
+  {name:'糖糖',    color:'#f0b429', sex:'F', pers:0, loanPct:0, cashPct:40, stockPct:35},
+  {name:'烏咪',    color:'#e67e22', sex:'F', pers:0, loanPct:0, cashPct:60, stockPct:20},
+  {name:'孫小美',  color:'#a0522d', sex:'F', pers:0, loanPct:50, cashPct:50, stockPct:0},
+  {name:'小丹尼',  color:'#2f6fe0', sex:'M', pers:1, loanPct:30, cashPct:55, stockPct:15},
+  {name:'金貝貝',  color:'#26c6da', sex:'M', pers:2, loanPct:80, cashPct:80, stockPct:0},
 ];
 
 // 神明／特殊人物（NPC 類型碼沿用 exe：1~8 神、9 天使、10 惡魔、11 惡犬、12 土地公、13 禮物、14 寶箱、15 死神、16 路障、17 地雷、18 定時炸彈）
@@ -851,7 +852,7 @@ function newGame(s) {
   };
   s.players.forEach((ps, i) => {
     G.players.push({
-      id: i, name: ps.name, ch: ps.ch, human: ps.human, ai: ps.ai || 1,
+      id: i, name: ps.name, ch: ps.ch, human: ps.human, ai: ps.ai || (CHARACTERS[ps.ch].pers + 1), loanPct: CHARACTERS[ps.ch].loanPct, cashPct: CHARACTERS[ps.ch].cashPct, stockPct: CHARACTERS[ps.ch].stockPct,
       cash: 0, deposit: 0, loan: 0, loanDue: null, bankBan: 0,
       pos: pick(spawnCells), prev: -1, face: 7, vehicle: s.vehicle, dice: s.vehicle + 1,
       cards: [], items: {}, points: 0, status: { jail: 0, hosp: 0, abroad: 0, sleep: 0, walk: 0, hotel: 0, stay: 0, turnback: false },
@@ -948,31 +949,59 @@ function valueOf(x) { return x.t === 'L' ? (LD(x.o)[3] + LD(x.o)[4] * x.o.level)
 /* 場景切換：音樂＋畫面（UI 有對應方法時） */
 function enterScene(scene, track) { Music.scene(track); if (scene && UI.enterScene) UI.enterScene(scene); }
 function exitScene(scene) { Music.endScene(); if (scene && UI.exitScene) UI.exitScene(); }
-/* ---------- 拍賣（價高者得；只有現金可參與） ---------- */
-async function auction(land, comm, seller, floor) {
+/* ---------- 拍賣（FUN_0043BDE5／FUN_0043A2DD：輪流喊價，加價 100／500／1000／5000／10000 或放棄，剩一人且有人出過價即成交） ----------
+   底價＝round(地價×(等級×0.5＋1))×物價；現金≤底價、坐牢／住院／出國／冬眠／夢遊／停留中、賣方本人不得參加。
+   電腦上限（FUN_00439F0D）＝min( (等級÷2＋1＋同路段自有地數)×底價×物價×(6－空地比例×4)×rnd[0.5,0.8] , 地價×物價×rnd[3,3.5) , 現金 )。
+   minimal（拍賣卡等）＝電腦每次只加 100；破產拍賣則依上限選最大加價；若現任最高出價者現金追不上，則只加到剛好超過其現金。 */
+const AUCTION_STEPS = [100, 500, 1000, 5000, 10000];
+function auctionAiMax(q, land, comm) {
+  const idx = G.priceIdx, r = 0.5 + Math.random() * 0.3;
+  let v1, v2;
+  if (land) { const sameSt = G.lands.filter(x => x !== land && x.owner === q.id + 1 && LD(x)[2] === LD(land)[2]).length; const unowned = G.lands.filter(x => x.i > 0 && !x.owner).length; const f = 6 - unowned / Math.max(1, G.lands.length - 1) * 4;
+    v1 = Math.round(((land.level >> 1) + 1 + sameSt) * G._aucBase * idx * f * r); v2 = Math.round(LD(land)[3] * idx * (3 + Math.random() * 0.5)); }
+  else { const unowned = G.comm.filter(x => x.i > 0 && !x.owner).length; const f = 6 - unowned / Math.max(1, G.comm.length - 1) * 4;
+    v1 = Math.round(((comm.level >> 1) + 1) * G._aucBase * idx * f * r); v2 = Math.round(CD(comm)[3] * idx * (3 + Math.random() * 0.5)); }
+  return Math.min(v1, v2, q.cash);
+}
+async function auction(land, comm, seller, floor, minimal = true) {
   const name = land ? LD(land)[2] : CD(comm)[2];
-  const base = floor || Math.round((land ? marketValue(land) : (CD(comm)[3] + CD(comm)[4] * comm.level) * G.priceIdx * 0.5));
-  const bidders = alivePlayers().filter(q => !seller || q.id !== seller.id).filter(q => q.cash >= base);
+  const x = land || comm, pr = land ? LD(land)[3] : CD(comm)[3];
+  let price = floor || Math.round(pr * (x.level * 0.5 + 1)) * G.priceIdx; G._aucBase = price;
+  const parts = alivePlayers().filter(q => !(seller && q.id === seller.id) && q.cash > price && !statusActive(q) && !q.status.stay);
   enterScene('trade', 'RICH20');
-  let best = null, price = base;
-  // AI 出價：依資金與個性
-  for (const q of bidders) {
-    let bid = 0;
-    if (q.human) {
-      const v = await UI.number(`公開拍賣土地一處。\n${name} 底價${fmt(base)}元 請意者出價。\n（放棄請按取消）`, q.cash, 100, base);
-      if (v && v >= base) { bid = v; Sfx.play('bid'); }
-    } else {
-      const worth = land ? (LD(land)[3] + LD(land)[4] * land.level) * G.priceIdx : (CD(comm)[3] + CD(comm)[4] * comm.level) * G.priceIdx;
-      if (q.cash > worth * 1.5 && Math.random() < 0.7) bid = Math.round(Math.min(q.cash, worth * (0.9 + Math.random() * 0.5 + q.ai * 0.1)) / 100) * 100;
+  Sfx.sayAll([131, 132]);
+  const out = new Set(); let top = null; const aiMax = {}; parts.forEach(q => { if (!q.human) aiMax[q.id] = auctionAiMax(q, land, comm); });
+  if (parts.length) {
+    let cur = 0, guard = 0;
+    while (guard++ < 400) {
+      const active = parts.filter(q => !out.has(q.id));
+      if (!active.length) break;
+      if (active.length === 1 && top) break;   // 只剩一人且有人出價 → 成交
+      const q = parts[cur % parts.length]; cur++;
+      if (out.has(q.id)) continue;
+      let step = -1;   // -1 放棄
+      if (q.human) {
+        const opts = AUCTION_STEPS.filter(s => q.cash >= price + s).map(s => ({ label: `加價 ${fmt(s)}（${fmt(price + s)} 元）`, value: s }));
+        if (!opts.length) step = -1;
+        else { const v = await UI.choose(`公開拍賣 ${name}\n底價 ${fmt(G._aucBase)} 元　目前標價 ${fmt(price)} 元${top ? '（' + top.name + '）' : ''}\n${q.name} 請出價：`, opts.concat([{ label: '放棄', value: -1 }])); step = (v === null || v === undefined) ? -1 : v; }
+      } else {
+        const mx = aiMax[q.id];
+        let k = -1; for (let i = AUCTION_STEPS.length - 1; i >= 0; i--) if (mx >= price + AUCTION_STEPS[i]) { k = i; break; }
+        if (k >= 0 && top && top.cash + 500 < price + AUCTION_STEPS[k]) { const need = top.cash + 500 - price; k = AUCTION_STEPS.findIndex(s => s >= need); if (k < 0) k = 0; }
+        if (k >= 0 && minimal) k = 0;
+        step = k >= 0 ? AUCTION_STEPS[k] : -1;
+        if (step > 0 && q.cash < price + step) step = -1;
+      }
+      if (step < 0) { out.add(q.id); await UI.toast(`${q.name} 放棄`); continue; }
+      price += step; top = q; Sfx.play('bid'); await UI.toast(`${q.name} 出價 ${fmt(price)} 元`);
     }
-    if (bid > price || (bid >= base && !best)) { best = q; price = bid; }
   }
-  if (!best) { await UI.msg(`公開拍賣 ${name}\n無人出價，宣佈流標。`); if (seller) { if (land) { land.owner = 0; land.level = 0; land.chain = false; } else { comm.owner = 0; comm.level = 0; comm.kind = -1; } } exitScene('trade'); return 0; }
-  best.cash -= price;
-  if (land) land.owner = best.id + 1; else comm.owner = best.id + 1;
+  if (!top) { Sfx.sayAll([148]); await UI.msg(`公開拍賣 ${name}\n無人出價，宣佈流標。`); if (seller) { if (land) { land.owner = 0; land.level = 0; land.chain = false; } else { comm.owner = 0; comm.level = 0; comm.kind = -1; } } exitScene('trade'); return 0; }
+  top.cash -= price;
+  if (land) land.owner = top.id + 1; else comm.owner = top.id + 1;
   setLease(land || comm);
-  Sfx.play('hammer'); Sfx.sayAll([135, 136 + best.ch]); await UI.msg(`${fmt(price)}元成交\n恭喜${best.name}購得此地！`);
-  log(`${best.name} 拍賣購得 ${name} ${fmt(price)}`);
+  Sfx.play('hammer'); Sfx.sayAll([135, 136 + top.ch]); await UI.msg(`${fmt(price)}元成交\n恭喜${top.name}購得此地！`);
+  log(`${top.name} 拍賣購得 ${name} ${fmt(price)}`);
   exitScene('trade');
   return price;
 }
@@ -996,7 +1025,7 @@ async function goBankrupt(p) {
   Music.endScene();
   log(`${p.name} 破產`);
   if (checkGameOver()) return;
-  if (freed.length > 3) { shuffle(freed); for (let k = 0; k < 3; k++) { const f = freed[k]; await auction(f.land || null, f.comm || null, null); } }
+  if (freed.length > 3) { shuffle(freed); for (let k = 0; k < 3; k++) { const f = freed[k]; await auction(f.land || null, f.comm || null, null, 0, false); } }
 }
 function checkGameOver() {
   const alive = alivePlayers();
@@ -1176,6 +1205,7 @@ async function playTurn(p) {
   let action;
   do {
     action = p.human ? await UI.turnMenu(p) : await aiPreMove(p);
+    if (action === 'teleported') { p.teleported = false; await UI.toast(`${p.name} 使用傳送機後本回合不能再前進`); UI.render(); return; }
     if (action === 'card') await useCardMenu(p);
     else if (action === 'item') { await useItemMenu(p); if (p.teleported) { p.teleported = false; await UI.toast(`${p.name} 使用傳送機後本回合不能再前進`); UI.render(); return; } }
     else if (action === 'stock') await stockMenu(p);
@@ -1187,7 +1217,7 @@ async function playTurn(p) {
   } while (action !== 'go' && action !== 'go1' && action !== 'go2' && action !== 'go3' && action !== 'remote');
   let steps;
   const nd = clamp(action === 'go' ? p.dice : parseInt(action.slice(2)) || p.dice, 1, p.vehicle + 1);
-  if (action === 'remote') { steps = await UI.number('遙控骰子：請輸入前進步數', nd * 6, 1, 1); if (!steps) steps = 1; consumeItem(p, 7); }
+  if (action === 'remote') { steps = p.human ? await UI.number('遙控骰子：請輸入前進步數', nd * 6, 1, 1) : ((G.aiPlan && G.aiPlan.steps) || 1); G.aiPlan = null; if (!steps) steps = 1; consumeItem(p, 7); if (!p.human) await UI.toast(`${p.name} 使用遙控骰子：前進 ${steps} 步`); }
   else { const dice = await UI.dice(nd); steps = dice.reduce((a, b) => a + b, 0); }
   if (p.turtle) { steps = 1; p.turtle = 0; await UI.toast('烏龜卡：一次走一步'); }
   await moveSteps(p, steps, false);
@@ -1299,9 +1329,11 @@ function moveVillains() {
 /* ---------- 銀行 ---------- */
 async function bankPass(p) {
   if (isHoliday(G.date)) { if (p.human) await UI.toast('銀行例假日休息'); return; }
-  if (!p.human) { // AI：保留現金約 40%+，其餘存入；現金不足則提領
-    const total = p.cash + p.deposit; const keep = Math.round(total * (0.5 - p.ai * 0.1));
-    if (p.cash > keep) { p.deposit += p.cash - keep; p.cash = keep; } else if (p.cash < keep) { const w = Math.min(p.deposit, keep - p.cash); p.deposit -= w; p.cash += w; }
+  if (!p.human) { // AI（FUN_004379C9）：目標現金比＝資金運用比例÷100，月初（<8 日）×1.5、月底（>25 日）×0.5，夾在 0.1～0.9；與現況差 ≥0.25（或現金為 0）才調整
+    const total = p.cash + p.deposit; if (!total) return;
+    let t = (p.cashPct === undefined ? 50 : p.cashPct) / 100; if (G.date.d < 8) t *= 1.5; if (G.date.d > 25) t *= 0.5; if (t >= 1) t = 0.9; else if (t <= 0) t = 0.1;
+    const cur = p.cash / total;
+    if (Math.abs(cur - t) >= 0.25 || p.cash === 0) { const c = Math.round(total * t); p.cash = c; p.deposit = total - c; }
     return;
   }
   enterScene('bank', 'RICH19');
@@ -1313,8 +1345,9 @@ async function bankPass(p) {
 async function bankMenu(p, landed) {
   if (isWeekend(G.date)) { await UI.msg('今天是星期例假日\n銀行不對外營業。'); return; }
   if (p.bankBan > 0) { await UI.msg(`銀行拒絕往來\n還剩 ${p.bankBan} 天！`); return; }
-  if (!p.human) { // AI（FUN_00436668）：原版電腦玩家的貸款比例欄位為 0，不主動貸款；有貸款時到期前 7 天內且資產足夠（≥ 貸款×1.1）或存款 > 貸款×2 即償還
-    if (p.loan) { const due = p.loanDue ? dateDiff(G.date, p.loanDue) : 99; if (p.deposit > p.loan * 2 || (due < 7 && p.cash + p.deposit >= p.loan * 1.1)) { await pay(p, p.loan, null, '償還貸款', { noPool: true }); await UI.toast(`${p.name} 償還貸款 ${fmt(p.loan)}`); p.loan = 0; p.loanDue = null; } }
+  if (!p.human) { // AI（FUN_00436668）：無貸款時，1/10 機率或現金＋存款 <30000 且貸款比例 >0 → 借 貸款比例%×額度（存入存款）；有貸款時到期前 7 天內且資產足夠（≥ 貸款×1.1）或存款 > 貸款×2 即償還
+    if (!p.loan && landed && (rnd(10) === 0 || p.cash + p.deposit < 30000) && (p.loanPct || 0) > 0) { const amt = Math.floor((p.loanPct * loanLimit(p)) / 100 / 100) * 100; if (amt > 0) { p.loan = amt; p.loanDue = loanDueDate(); p.deposit += amt; Sfx.sayText('您的貸款手續已經完成。'); await UI.toast(`${p.name} 向銀行貸款 ${fmt(amt)}`); } }
+    else if (p.loan) { const due = p.loanDue ? dateDiff(G.date, p.loanDue) : 99; if (p.deposit > p.loan * 2 || (due < 7 && p.cash + p.deposit >= p.loan * 1.1)) { await pay(p, p.loan, null, '償還貸款', { noPool: true }); await UI.toast(`${p.name} 償還貸款 ${fmt(p.loan)}`); p.loan = 0; p.loanDue = null; } }
     await bankPass(p); return;
   }
   enterScene('bank', 'RICH19');
@@ -1412,7 +1445,7 @@ async function landComm(p, c) {
   } else if (c.owner === p.id + 1) {
     if (statusActive(p)) return;
     if (c.level === 0) {
-      const cost = d[4] * idx;
+      const cost = d[3] * idx;   // FUN_0041982D：首次建設費＝地價（+0x22），之後升級＝+0x24
       if (p.cash < cost) { if (p.human) await UI.msg('您的現金不足！'); return; }
       const kind = p.human ? await UI.choose(`${d[2]}：請選擇設施類別（建設費 ${fmt(cost)}）`, FACILITY.map(f => ({ label: f.name, value: f.id, sub: f.help })).concat([{ label: '暫不建設', value: null }])) : [1, 2, 3, 4][rnd(4)];
       if (kind === null || kind === undefined) return;
@@ -1451,7 +1484,7 @@ async function landComp(p, k) {
   if (chair && chair.id === p.id) {
     await UI.toast(`董事長 ${p.name} 蒞臨 ${d[2]}`);
     if (type === 7) await bankMenu(p, true);
-    else if (type === 10) await shopVisit(p, true);
+    else if (type === 10) await shopVisit(p, true, true);
     else if (type === 4) { const n = await UI.wheel('insurance', `${d[2]}\n您的投保天數為...`); p.insur += n; await UI.msg(`董事長投保 ${n} 天，免費！`); }
     else if (type === 11) await realtyBuild(p, k, true);
     return;
@@ -1476,8 +1509,12 @@ async function landComp(p, k) {
   // 認購股份
   if (si >= 0 && !isWeekend(G.date) && G.stocks[si].suspend === 0 && !statusActive(p)) {
     const s = G.stocks[si];
-    if (p.human) { const n = await UI.number(`${d[2]}\n每股售價 ${s.price.toFixed(1)}\n是否認購股份？（最高 2000 股）`, Math.min(2000, Math.floor(p.cash / s.price)), 100); if (n) await buyStock(p, si, n, true); }
-    else { const n = Math.min(2000, Math.floor(p.cash * 0.3 / s.price / 100) * 100); if (n >= 100 && p.cash > 30000 * idx) await buyStock(p, si, n, true); }
+    // FUN_0041D1A9：每股售價取整數，上限＝min(現金÷股價, 1000, 可認購數)
+    const unit = Math.max(1, Math.floor(s.price)), maxQ = Math.max(0, Math.min(Math.floor(p.cash / unit), 1000, s.avail === undefined ? s.shares : s.avail));
+    if (maxQ > 0) {
+      if (p.human) { const n = await UI.number(`${d[2]}\n每股售價 ${unit}\n是否認購股份？（最高 ${maxQ} 股）`, maxQ, 100); if (n) await buyStock(p, si, Math.min(n, maxQ), true); }
+      else { const n = aiStockQty(p, unit, maxQ); if (n > 0) await buyStock(p, si, n, true); }
+    }
     if (type === 10 && p._boughtNow >= 2000) { const c = giveRandomCard(p); if (c !== null) await UI.msg(`百貨公司回饋\n送您 ${CARDS[c].name}！`); }
     p._boughtNow = 0;
     updateChairman(si);
@@ -1583,16 +1620,37 @@ async function dividends() {
 }
 
 /* ---------- 百貨公司（卡片／道具店） ---------- */
-async function shopVisit(p, isCompany) {
-  if (!p.human) { // AI 兌換
-    if (p.points >= 100 && Math.random() < 0.6) { const c = pick(CARDS.filter(c => c.price <= p.points && c.price >= 20 && G.cardPool[c.id] > 0)); if (c && p.cards.length < 15) { p.points -= c.price; giveCard(p, c.id); await UI.toast(`${p.name} 兌換 ${c.name}`); } }
-    if (p.points >= 80 && !p.vehicle && G.itemStock[4] > 0 && Math.random() < 0.7) { p.points -= 80; buyItemEffect(p, 4); await UI.toast(`${p.name} 兌換機車`); }
-    else if (p.points >= 150 && p.vehicle === 1 && G.itemStock[5] > 0 && Math.random() < 0.5) { p.points -= 150; buyItemEffect(p, 5); await UI.toast(`${p.name} 兌換汽車`); }
-    return;
-  }
+async function shopVisit(p, isCompany, chair) {
+  // FUN_0042E931：董事長蒞臨 → 隨機送一張卡（庫存加權）或一件道具，並依價值播放反應語音
+  if (chair) { let gift = ''; if (rnd(2) === 0) { const c = giveRandomCard(p); if (c !== null) { gift = CARDS[c].name; Voice.points(p, CARDS[c].price); } } else { const ks = [0, 1, 2, 3, 4, 5, 6, 7].filter(k => G.itemStock[k] > 0 && (p.items[k] || 0) < 9); if (ks.length) { const k = pick(ks); giveItem(p, k); gift = ITEMS[k].name; Voice.points(p, ITEMS[k].price); } } if (gift) await UI.msg(`歡迎董事長光臨\n送您${gift}！`); }
+  if (!p.human) { await aiShop(p); return; }
   Music.scene('RICH21');
   await UI.shopPanel(p);
   Music.endScene();
+}
+/* 電腦逛百貨公司（FUN_0042E931 電腦分支）：
+   1. 賣掉攻擊性比個性高 2 級的卡／道具（九折換點券）；2. 點券 <100 時賣最便宜的卡、多餘道具、與現有車輛重複的機車汽車；
+   3. 一半點券買卡（價格由高到低、不買太兇的卡、卡欄 15 張上限）；另一半買道具：先機車（無車且無機車時）、汽車，再依序 遙控骰子／路障／飛彈／機器娃娃／定時炸彈／地雷（各 <9 個）。 */
+async function aiShop(p) {
+  const pers = AI.pers(p); const sold = [], bought = [];
+  const sellCard = (c) => { p.points += Math.round(CARDS[c].price * 0.9); removeCard(p, c); sold.push(CARDS[c].name); };
+  const sellItem = (k, n) => { p.points += Math.round(ITEMS[k].price * 0.9) * n; p.items[k] -= n; if (k < 8) G.itemStock[k] += n; sold.push(ITEMS[k].name + (n > 1 ? '×' + n : '')); };
+  [...p.cards].forEach(c => { if (CARD_AGGR[c] - pers === 2) sellCard(c); });
+  Object.keys(p.items).forEach(k => { if (p.items[k] > 0 && ITEM_AGGR[+k] - pers === 2) sellItem(+k, p.items[k]); });
+  if (p.points < 100) {
+    if (p.cards.length) sellCard([...p.cards].sort((a, b) => CARDS[a].price - CARDS[b].price)[0]);
+    Object.keys(p.items).forEach(k => { if (p.items[k] > 1) sellItem(+k, p.items[k] - 1); });
+    if (p.vehicle === 1 && p.items[4] > 0) sellItem(4, p.items[4]); if (p.vehicle === 2 && p.items[5] > 0) sellItem(5, p.items[5]);
+  }
+  if (p.points > 0) {
+    let half = p.points >> 1, rest = p.points - half;
+    const cands = []; CARDS.forEach(c => { for (let i = 0; i < G.cardPool[c.id]; i++) if (c.price <= half && CARD_AGGR[c.id] - pers !== 2) cands.push(c.id); }); cands.sort((a, b) => CARDS[b].price - CARDS[a].price);
+    for (const c of cands) { if (p.cards.length >= 15) break; if (CARDS[c].price <= half && G.cardPool[c] > 0) { p.points -= CARDS[c].price; giveCard(p, c); half -= CARDS[c].price; bought.push(CARDS[c].name); } }
+    if (p.vehicle !== 1 && !(p.items[4] > 0) && ITEMS[4].price < rest && G.itemStock[4] > 0) { p.points -= ITEMS[4].price; rest -= ITEMS[4].price; giveItem(p, 4); bought.push(ITEMS[4].name); }
+    if (p.vehicle !== 2 && !(p.items[5] > 0) && ITEMS[5].price < rest && G.itemStock[5] > 0) { p.points -= ITEMS[5].price; rest -= ITEMS[5].price; giveItem(p, 5); bought.push(ITEMS[5].name); }
+    for (const k of [7, 1, 6, 0, 3, 2]) { if ((p.items[k] || 0) < 9 && ITEM_AGGR[k] - pers !== 2 && ITEMS[k].price <= rest && G.itemStock[k] > 0) { p.points -= ITEMS[k].price; rest -= ITEMS[k].price; giveItem(p, k); bought.push(ITEMS[k].name); } }
+  }
+  if (sold.length || bought.length) await UI.toast(`${p.name} 百貨公司：${sold.length ? '賣出 ' + sold.join('、') : ''}${sold.length && bought.length ? '；' : ''}${bought.length ? '兌換 ' + bought.join('、') : ''}`);
 }
 function buyItemEffect(p, id) {   // 機車／汽車直接成為交通工具（原有車輛歸還庫存）
   if (id === 4 || id === 5) { if (p.vehicle) loseVehicle(p); G.itemStock[id]--; p.vehicle = id - 3; p.dice = id - 2; return; }
@@ -1804,7 +1862,7 @@ async function chooseTarget(p, title, filter) {
 async function chooseTargetInner(p, title, filter) {
   const list = others(p).filter(filter || (() => true));
   if (!list.length) return null;
-  if (!p.human) { list.sort((a, b) => (p.grudge[b.id] + assets(b) / 10000) - (p.grudge[a.id] + assets(a) / 10000)); return list[0]; }
+  if (!p.human) { if (G.aiPlan && G.aiPlan.player && list.includes(G.aiPlan.player)) return G.aiPlan.player; list.sort((a, b) => (p.grudge[b.id] + assets(b) / 10000) - (p.grudge[a.id] + assets(a) / 10000)); return list[0]; }
   return G.players[await UI.choose(title, list.map(q => ({ label: q.name, value: q.id, sub: `現金 ${fmt(q.cash)}` })).concat([{ label: '取消', value: null }]))] || null;
 }
 async function chooseLand(p, title, filter) {
@@ -1813,7 +1871,7 @@ async function chooseLand(p, title, filter) {
 async function chooseLandInner(p, title, filter) {
   const list = G.lands.filter(filter);
   if (!list.length) { if (p.human) await UI.msg('沒有可選擇的目標。'); return null; }
-  if (!p.human) return list[rnd(list.length)];
+  if (!p.human) { if (G.aiPlan && G.aiPlan.land && list.includes(G.aiPlan.land)) return G.aiPlan.land; return list[rnd(list.length)]; }
   const v = await UI.choose(title, list.map(l => ({ label: `${LD(l)[2]}（${l.chain ? '連鎖店' : BUILD_NAMES[l.level]}）`, value: l.i, sub: `地主：${ownerName(l.owner)}` })).concat([{ label: '取消', value: null }]));
   return v === null || v === undefined ? null : G.lands[v];
 }
@@ -1842,13 +1900,13 @@ async function useCardInner(p, id) {
     case 3: { if (!l0 || l0.owner !== p.id + 1) return fail('必須走在自己的土地上才能使用。'); const t = await chooseLand(p, '換地卡：選擇要換的土地', l => l.owner && l.owner !== p.id + 1); if (!t) return false; const o = t.owner; t.owner = p.id + 1; l0.owner = o; addGrudge(o - 1, p.id, Math.abs(marketValue(t) - marketValue(l0))); await UI.msg(`換地卡生效！\n${LD(l0)[2]} ↔ ${LD(t)[2]}`); return true; }
     case 4: { if (!l0 || l0.owner !== p.id + 1 || !l0.level) return fail('必須走在自己有房子的土地上才能使用。'); const t = await chooseLand(p, '換屋卡：選擇要換的房屋', l => l.owner && l.owner !== p.id + 1 && l.level > 0); if (!t) return false; [l0.level, t.level] = [t.level, l0.level]; [l0.chain, t.chain] = [t.chain, l0.chain]; addGrudge(t.owner - 1, p.id, 1000); await UI.msg(`換屋卡生效！\n${LD(l0)[2]} 與 ${LD(t)[2]} 房屋互換`); return true; }
     case 5: { const t = await UI.choosePlayer(p, '轉向卡：選擇對象（含自己）', alivePlayers()); UI.lastTarget = t || null; if (!t) return false; turnBack(t); await UI.msg(`${t.name} 向後轉！`); return true; }
-    case 6: { if (l0 && l0.owner === p.id + 1) { if (!l0.chain && l0.level === 0 && !await UI.confirm('空地改建為連鎖店？')) return false; l0.chain = !l0.chain; if (l0.chain && l0.level === 0) l0.level = 1; await UI.msg(`改建卡生效！\n${LD(l0)[2]} ${l0.chain ? '改建為連鎖店' : '改回一般建築'}`); return true; } if (c0 && c0.owner === p.id + 1 && c0.level > 0) { const k = await UI.choose('改建卡：變更設施項目', FACILITY.map(f => ({ label: f.name, value: f.id }))); if (k === null || k === undefined) return false; c0.kind = k; c0.level = Math.min(c0.level, FACILITY[k].max); await UI.msg(`改建為 ${FACILITY[k].name}`); return true; } return fail('必須走到自己有建築的土地上。'); }
+    case 6: { if (l0 && l0.owner === p.id + 1) { if (!l0.chain && l0.level === 0 && !await UI.confirm('空地改建為連鎖店？')) return false; l0.chain = !l0.chain; if (l0.chain && l0.level === 0) l0.level = 1; await UI.msg(`改建卡生效！\n${LD(l0)[2]} ${l0.chain ? '改建為連鎖店' : '改回一般建築'}`); return true; } if (c0 && c0.owner === p.id + 1 && c0.level > 0) { const k = p.human ? await UI.choose('改建卡：變更設施項目', FACILITY.map(f => ({ label: f.name, value: f.id }))) : ((G.aiPlan && G.aiPlan.kind) || 1 + rnd(4)); if (k === null || k === undefined) return false; c0.kind = k; c0.level = Math.min(c0.level, FACILITY[k].max); await UI.msg(`改建為 ${FACILITY[k].name}`); return true; } return fail('必須走到自己有建築的土地上。'); }
     case 7: { const x = l0 || c0; if (!x || !x.owner || x.owner === p.id + 1) return fail('必須走到別人的土地上才能使用。'); const o = G.players[x.owner - 1]; const got = await auction(l0, c0, p); p.cash += got; addGrudge(o.id, p.id, got); if (!got && l0) { l0.owner = 0; } return true; }
     case 8: { const t = await chooseLand(p, '天使卡：選擇一棟建築，整路段加蓋一層', l => l.owner && l.level > 0 && !l.chain); if (!t) return false; G.lands.forEach(x => { if (LD(x)[2] === LD(t)[2] && x.owner && !x.chain && x.level < 5) x.level++; }); await UI.msg(`天使卡生效！\n${LD(t)[2]} 路段房屋全部加蓋一層`); return true; }
     case 9: { const t = await chooseLand(p, '惡魔卡：選擇一棟建築，整路段夷為平地', l => l.level > 0); if (!t) return false; G.lands.forEach(x => { if (LD(x)[2] === LD(t)[2] && x.level > 0) { addGrudge(x.owner - 1, p.id, x.level * 30 * idx); x.level = 0; x.chain = false; } }); await UI.msg(`惡魔卡生效！\n${LD(t)[2]} 路段全部夷為平地`); return true; }
     case 10: { const t = await chooseLand(p, '怪獸卡：選擇一棟建築徹底摧毀', l => l.level > 0); if (!t) return false; Sfx.play('monster'); if (UI.eventAnim) await UI.eventAnim(557, { ci: cellsOfLand(t)[0] }); addGrudge(t.owner - 1, p.id, t.level * 30 * idx); t.level = 0; t.chain = false; await UI.msg(`怪獸卡生效！\n${LD(t)[2]} 被夷為平地`); return true; }
-    case 11: { const ri = Object.keys(G.roadItems); const t = await chooseLand(p, '拆除卡：選擇一棟建築拆除一級', l => l.level > 0); if (!t) { if (ri.length && p.human && await UI.confirm('拆除路面道具？')) { const k = ri[0]; delete G.roadItems[k]; return true; } return false; } Sfx.play('collapse'); if (UI.eventAnim) await UI.eventAnim(556, { ci: cellsOfLand(t)[0] }); addGrudge(t.owner - 1, p.id, 30 * idx); t.level--; if (!t.level) t.chain = false; await UI.msg(`拆除卡生效！\n${LD(t)[2]} 拆除一級`); return true; }
-    case 12: { const t = await chooseTarget(p, '搶奪卡：選擇對手', q => q.cards.length || Object.values(q.items).some(n => n)); if (!t) return fail('沒有可搶的對手。'); if (t.cards.length) { const c = t.cards.splice(rnd(t.cards.length), 1)[0]; transferCard(t, p, c); await UI.msg(`搶得 ${t.name} 的 ${CARDS[c].name}！`); } else { const k = Object.keys(t.items).find(k => t.items[k] > 0); t.items[k]--; p.items[k] = Math.min(9, (p.items[k] || 0) + 1); await UI.msg(`搶得 ${t.name} 的 ${ITEMS[k].name}！`); } addGrudge(t.id, p.id, 500); return true; }
+    case 11: { const ri = Object.keys(G.roadItems); if (!p.human && G.aiPlan && G.aiPlan.road && G.roadItems[G.aiPlan.road]) { delete G.roadItems[G.aiPlan.road]; await UI.msg(`拆除卡生效！\n${cellName(G.aiPlan.road)} 的路面道具被拆除`); return true; } const t = await chooseLand(p, '拆除卡：選擇一棟建築拆除一級', l => l.level > 0); if (!t) { if (ri.length && p.human && await UI.confirm('拆除路面道具？')) { const k = ri[0]; delete G.roadItems[k]; return true; } return false; } Sfx.play('collapse'); if (UI.eventAnim) await UI.eventAnim(556, { ci: cellsOfLand(t)[0] }); addGrudge(t.owner - 1, p.id, 30 * idx); t.level--; if (!t.level) t.chain = false; await UI.msg(`拆除卡生效！\n${LD(t)[2]} 拆除一級`); return true; }
+    case 12: { const t = await chooseTarget(p, '搶奪卡：選擇對手', q => q.cards.length || Object.values(q.items).some(n => n)); if (!t) return fail('沒有可搶的對手。'); if (t.cards.length) { let ci = rnd(t.cards.length); if (!p.human && G.aiPlan && G.aiPlan.card !== undefined && t.cards.indexOf(G.aiPlan.card) >= 0) ci = t.cards.indexOf(G.aiPlan.card); const c = t.cards.splice(ci, 1)[0]; transferCard(t, p, c); await UI.msg(`搶得 ${t.name} 的 ${CARDS[c].name}！`); } else { const k = Object.keys(t.items).find(k => t.items[k] > 0); t.items[k]--; p.items[k] = Math.min(9, (p.items[k] || 0) + 1); await UI.msg(`搶得 ${t.name} 的 ${ITEMS[k].name}！`); } addGrudge(t.id, p.id, 500); return true; }
     case 13: { const t = await UI.choosePlayer(p, '停留卡：選擇對象（含自己）', alivePlayers()); UI.lastTarget = t || null; if (!t) return false; t.status.stay = 1; if (t.id !== p.id) addGrudge(t.id, p.id, 300); await UI.msg(`${t.name} 下一次前進將停留原地`); return true; }
     case 14: { const t = await chooseTarget(p, '冬眠卡：選擇對手'); if (!t) return false; if (await offerPassive(t, 20, `${p.name} 對你使用冬眠卡`)) { await UI.msg(`${t.name} 免罪卡生效！`); return true; } if (await offerPassive(t, 17, `${p.name} 對你使用冬眠卡`)) { await UI.msg(`${t.name} 復仇卡生效！雙方一起冬眠`); p.status.sleep = 5; } t.status.sleep = 5; addGrudge(t.id, p.id, 1500); await UI.msg(`${t.name} 冬眠五天！`); return true; }
     case 15: { const t = await chooseTarget(p, '夢遊卡：選擇對手'); if (!t) return false; if (await offerPassive(t, 20, `${p.name} 對你使用夢遊卡`)) { await UI.msg(`${t.name} 免罪卡生效！`); return true; } if (await offerPassive(t, 17, `${p.name} 對你使用夢遊卡`)) { await UI.msg(`${t.name} 復仇卡生效！雙方一起夢遊`); p.status.walk = 5; } t.status.walk = 5; addGrudge(t.id, p.id, 1500); await UI.msg(`${t.name} 夢遊五天！`); return true; }
@@ -1856,7 +1914,7 @@ async function useCardInner(p, id) {
     case 17: case 18: case 19: case 20: return fail('此卡片在遭遇事件時自動詢問使用。');
     case 21: { if (!p.god && !p.bomb) return fail('沒有神明附身或定時炸彈。'); if (p.bomb) { p.bomb = 0; await UI.msg('送神符生效！定時炸彈被送走了'); return true; } await UI.msg(`送神符生效！\n${godName(p.god)} 被送走了`); releaseGod(p, false); return true; }
     case 22: { const gods = G.npcs.filter(n => n.host < 0 && (n.type <= 12 || n.type === 15) && n.type !== 11); if (!gods.length) return fail('地圖上沒有神明。'); let best = gods[0], bd = 1e9; const c = cell(p.pos); gods.forEach(n => { const d = Math.hypot(cell(n.cell)[0] - c[0], cell(n.cell)[1] - c[1]); if (d < bd) { bd = d; best = n; } }); if (!p.human) { if (!NPC[best.type].good) return false; } await possess(p, best); return true; }
-    case 23: case 24: { const s = p.human ? await UI.choose(`${CARDS[id].name}：選擇股票`, G.stocks.map(s => ({ label: `${MAP.stocks[s.i][0]} ${s.price.toFixed(1)}`, value: s.i })).concat([{ label: '取消', value: null }])) : (id === 23 ? (p.stocks.map((h, i) => h.q ? i : -1).filter(i => i >= 0)[0] ?? rnd(12)) : rnd(12)); if (s === null || s === undefined) return false; const st = G.stocks[s]; const dir = id === 23 ? 1 : -1; if (st.forced === -dir) { st.forced = 0; st.forcedDays = 0; await UI.msg('紅卡與黑卡互相抵消！'); } else { st.forced = dir; st.forcedDays = 3; await UI.msg(`${MAP.stocks[s][0]} 將${dir > 0 ? '漲停' : '跌停'}三天！`); } return true; }
+    case 23: case 24: { const s = p.human ? await UI.choose(`${CARDS[id].name}：選擇股票`, G.stocks.map(s => ({ label: `${MAP.stocks[s.i][0]} ${s.price.toFixed(1)}`, value: s.i })).concat([{ label: '取消', value: null }])) : ((G.aiPlan && G.aiPlan.stock !== undefined) ? G.aiPlan.stock : (id === 23 ? (p.stocks.map((h, i) => h.q ? i : -1).filter(i => i >= 0)[0] ?? rnd(12)) : rnd(12))); if (s === null || s === undefined) return false; const st = G.stocks[s]; const dir = id === 23 ? 1 : -1; if (st.forced === -dir) { st.forced = 0; st.forcedDays = 0; await UI.msg('紅卡與黑卡互相抵消！'); } else { st.forced = dir; st.forcedDays = 3; await UI.msg(`${MAP.stocks[s][0]} 將${dir > 0 ? '漲停' : '跌停'}三天！`); } return true; }
     case 25: { const t = await chooseTarget(p, '查稅卡：選擇對手', q => q.cash > 0); if (!t) return false; const m = Math.floor(t.cash * 0.2); await UI.msg(`查稅卡生效！\n向 ${t.name} 抽取 ${fmt(m)} 元稅金`); if (await offerPassive(t, 19, `被查稅 ${fmt(m)} 元`)) { await UI.msg(`${t.name} 免費卡生效！`); return true; } t.cash -= m; p.cash += m; addGrudge(t.id, p.id, m); return true; }
     case 26: case 27: { const t = await chooseLand(p, `${CARDS[id].name}：選擇路段`, l => l.owner && (id === 26 ? l.owner === p.id + 1 : l.owner !== p.id + 1)); if (!t) return false; const f = id === 26 ? 2 : 1; G.lands.forEach(x => { if (LD(x)[2] === LD(t)[2]) { if (x.flag && x.flag !== f) { x.flag = 0; x.flagDays = 0; } else { x.flag = f; x.flagDays = 5; } } }); if (id === 27) addGrudge(t.owner - 1, p.id, 1000); await UI.msg(`${CARDS[id].name}生效！\n${LD(t)[2]} 路段五天內${id === 26 ? '加倍收費' : '免收過路費'}`); return true; }
     case 28: { const t = await chooseTarget(p, '同盟卡：選擇盟友'); if (!t) return false; p.ally = t.id; p.allyDays = 7; t.ally = p.id; t.allyDays = 7; await UI.msg(`${p.name} 與 ${t.name} 同盟七天！\n互不收過路費，房地產聯合收費。`); return true; }
@@ -1879,16 +1937,16 @@ async function useItem(p, id) {
   const fail = async (t) => { if (p.human) await UI.msg(t); return false; };
   switch (id) {
     case 0: { const n = G.npcs.filter(x => x.host < 0 && !NPC[x.type].good && x.type !== 11); if (!n.length && !Object.keys(G.roadItems).length) return fail('前方沒有障礙物。'); let cnt = 0; const c = cell(p.pos); n.forEach(x => { if (Math.hypot(cell(x.cell)[0] - c[0], cell(x.cell)[1] - c[1]) < 400) { removeNpc(x); cnt++; } }); Object.keys(G.roadItems).forEach(k => { if (Math.hypot(cell(k)[0] - c[0], cell(k)[1] - c[1]) < 400) { delete G.roadItems[k]; cnt++; } }); await UI.msg(`機器娃娃踢除了 ${cnt} 個障礎物！`); return true; }
-    case 1: case 2: case 3: { const cands = nearbyRoad(p, 360); if (!cands.length) return fail('附近沒有可放置的道路。'); const ci = p.human ? await UI.pickCell(cands, `請選擇放置${ITEMS[id].name}的位置`) : pick(cands); if (!ci) return false; G.roadItems[ci] = { type: 15 + id, owner: p.id }; await UI.msg(`${ITEMS[id].name} 已放置在 ${cellName(ci)}`); return true; }
+    case 1: case 2: case 3: { const cands = nearbyRoad(p, 360); if (!cands.length) return fail('附近沒有可放置的道路。'); const ci = p.human ? await UI.pickCell(cands, `請選擇放置${ITEMS[id].name}的位置`) : ((G.aiPlan && cands.includes(G.aiPlan.cell)) ? G.aiPlan.cell : pick(cands)); if (!ci) return false; G.roadItems[ci] = { type: 15 + id, owner: p.id }; await UI.msg(`${ITEMS[id].name} 已放置在 ${cellName(ci)}`); return true; }
     case 4: if (p.vehicle >= 1) return fail('您已經有交通工具了。'); p.items[4]--; p.vehicle = 1; p.dice = 2; await UI.msg('機車！骰子數增加至兩個'); return false;
     case 5: if (p.vehicle >= 2) return fail('您已經有汽車了。'); if (p.vehicle) loseVehicle(p); p.items[5]--; p.vehicle = 2; p.dice = 3; await UI.msg('汽車！骰子數增加至三個'); return false;
-    case 6: { const cands = MAP.cells.map((x, i) => i).filter(i => i > 0 && i !== p.pos); const ci = p.human ? await UI.pickCell(cands, '飛彈：請選擇目標位置（範圍 3×3）') : (others(p).length ? others(p)[0].pos : null); if (!ci) return false; await explode(ci, false, '飛彈', p.id); return true; }
+    case 6: { const cands = MAP.cells.map((x, i) => i).filter(i => i > 0 && i !== p.pos); const ci = p.human ? await UI.pickCell(cands, '飛彈：請選擇目標位置（範圍 3×3）') : ((G.aiPlan && G.aiPlan.cell) || (others(p).length ? others(p)[0].pos : null)); if (!ci) return false; await explode(ci, false, '飛彈', p.id); return true; }
     case 7: return fail('遙控骰子請在前進時選擇「遙控骰子」。');
     case 8: { const t = await chooseLand(p, '機器工人：選擇土地加蓋一級', l => l.owner === p.id + 1 && !l.chain && l.level < 5); if (!t) return false; t.level++; await UI.msg(`${LD(t)[2]} 加蓋一級！`); return true; }
     case 9: { if (!G.snapshot) return fail('沒有可回復的狀態。'); const snap = JSON.parse(G.snapshot); snap.players[p.id].items[9] = (snap.players[p.id].items[9] || 1) - 1; snap.snapshot = null; Object.assign(G, snap); await UI.msg('時光機：所有人回復為上一回合的狀態！'); UI.render(); return false; }
-    case 10: { const who = await UI.choosePlayer(p, '傳送機：選擇要傳送的人', alivePlayers()); if (!who) return false; const cands = MAP.cells.map((x, i) => i).filter(i => i > 0 && !isHolding(i) && !exitPathCells().has(i) && !alivePlayers().some(q => q.pos === i)); const ci = p.human ? await UI.pickCell(cands, '請選擇傳送目的地') : pick(cands); if (!ci) return false; Sfx.play('vanish'); if (UI.teleportAnim) await UI.teleportAnim(who.pos); who.prev = -1; who.pos = ci; UI.render(); if (UI.teleportAnim) await UI.teleportAnim(ci); await UI.msg(`${who.name} 瞬間移動到 ${cellName(ci)}！`); if (who.id === p.id) p.teleported = true; return true; }
+    case 10: { const who = await UI.choosePlayer(p, '傳送機：選擇要傳送的人', alivePlayers()); if (!who) return false; const cands = MAP.cells.map((x, i) => i).filter(i => i > 0 && !isHolding(i) && !exitPathCells().has(i) && !alivePlayers().some(q => q.pos === i)); const ci = p.human ? await UI.pickCell(cands, '請選擇傳送目的地') : ((G.aiPlan && cands.includes(G.aiPlan.cell)) ? G.aiPlan.cell : pick(cands)); if (!ci) return false; Sfx.play('vanish'); if (UI.teleportAnim) await UI.teleportAnim(who.pos); who.prev = -1; who.pos = ci; UI.render(); if (UI.teleportAnim) await UI.teleportAnim(ci); await UI.msg(`${who.name} 瞬間移動到 ${cellName(ci)}！`); if (who.id === p.id) p.teleported = true; return true; }
     case 11: p.truck = 18; await UI.msg('工程車出動！沿路拆除房屋一級，開十八步後報廢。'); return true;
-    case 12: { const cands = MAP.cells.map((x, i) => i).filter(i => i > 0); const ci = p.human ? await UI.pickCell(cands, '核子飛彈：請選擇目標位置（範圍 9×9）') : (others(p).length ? others(p)[0].pos : null); if (!ci) return false; await explode(ci, true, '核子飛彈', p.id); return true; }
+    case 12: { const cands = MAP.cells.map((x, i) => i).filter(i => i > 0); const ci = p.human ? await UI.pickCell(cands, '核子飛彈：請選擇目標位置（範圍 9×9）') : ((G.aiPlan && G.aiPlan.cell) || (others(p).length ? others(p)[0].pos : null)); if (!ci) return false; await explode(ci, true, '核子飛彈', p.id); return true; }
   }
   return false;
 }
@@ -2001,27 +2059,23 @@ async function aiTradeBoard(p) {   // FUN_004284BE 電腦部分
 }
 
 /* ---------- AI ---------- */
-function aiWantBuy(p, price, l) { const reserve = Math.min(7000, 2000 + p.ai * 2000) * G.priceIdx; return p.cash + p.deposit - price > reserve; }
-function aiWantBuild(p, cost) { return p.cash - cost > 3000 * G.priceIdx * (3 - p.ai); }
+// FUN_0041D7D4：保留金＝min(7000, round(起始資金×0.05))×物價；現金＋存款－地價 > 保留金才買
+function aiWantBuy(p, price, l) { const reserve = Math.min(7000, Math.round(G.startMoney * 0.05)) * G.priceIdx; return p.cash + p.deposit - price > reserve; }
+// FUN_0041982D：電腦玩家只要現金足夠就升級（無額外保留金判斷）
+function aiWantBuild(p, cost) { return p.cash >= cost; }
+// FUN_0041D839：電腦買股數＝(現金－round(起始資金×0.3)×物價)÷股價，上限 max
+function aiStockQty(p, price, max) { const avail = p.cash - Math.round(G.startMoney * 0.3) * G.priceIdx; if (avail <= 0) return 0; return avail > price * max ? max : Math.floor(avail / price); }
 async function aiPreMove(p) {
+  if (p.trustee && UI.trusteeBar) UI.trusteeBar(p);
   await aiTradeBoard(p);
-  // 使用卡片（依個性機率）
-  const aggr = [0.15, 0.35, 0.6][p.ai - 1];
-  if (p.cards.length && Math.random() < aggr) {
-    const usable = p.cards.filter(c => ![17, 18, 19, 20, 3, 4, 6, 7, 2].includes(c));
-    if (usable.length) { const id = pick(usable); if (await useCard(p, id)) removeCard(p, id); }
-  } else if (p.cards.length) {   // 走在自己地上：改建／換地等
-    const l0 = landAt(p.pos);
-    if (l0 && l0.owner === p.id + 1 && hasCard(p, 6) && !l0.chain && l0.level <= 1 && Math.random() < 0.3) { l0.chain = true; if (!l0.level) l0.level = 1; removeCard(p, 6); UI.toast(`${p.name} 把 ${LD(l0)[2]} 改建為連鎖店`); }
-  }
-  const items = Object.entries(p.items).filter(([k, n]) => n > 0 && [1, 2, 3, 6, 8, 11, 12].includes(+k));
-  if (items.length && Math.random() < aggr) { const id = +pick(items)[0]; if (await useItem(p, id)) consumeItem(p, id); }
-  if (p.items[4] > 0 && p.vehicle < 1) { p.items[4]--; p.vehicle = 1; p.dice = 2; }
-  if (p.items[5] > 0 && p.vehicle < 2) { p.items[5]--; if (p.vehicle) loseVehicle(p); p.vehicle = 2; p.dice = 3; }
-  // 股票：簡單逢低買、逢高賣（用存款）
-  if (!isWeekend(G.date) && !G.marketStop && Math.random() < 0.4) {
-    G.stocks.forEach((s, i) => { const h = p.stocks[i]; if (h.q && s.price > h.cost * 1.3) sellStock(p, i, h.q); else if (!h.q && s.price < s.base * 0.8 && p.deposit > 50000 * G.priceIdx && Math.random() < 0.3) buyStock(p, i, Math.floor(p.deposit * 0.2 / s.price / 100) * 100, false); });
-  }
+  // 卡片／道具：還原原版判斷表（ai.js）
+  if (p.cards.length && !(p.trustee && !p.trustee.cards)) await AI.useCards(p);
+  if (G.over || p.bankrupt) return 'go';
+  const itemAct = (p.trustee && !p.trustee.items) ? null : await AI.useItems(p);
+  if (itemAct === 'teleported') return 'teleported';
+  if (itemAct === 'remote') { p.dice = Math.max(1, Math.min(p.vehicle + 1, p.dice)); return 'remote'; }
+  // 股票（ai.js：原版評分制）
+  await AI.stockSell(p); await AI.stockBuy(p);
   p.dice = Math.max(1, Math.min(p.vehicle + 1, p.dice));
   return 'go';
 }
@@ -2089,6 +2143,7 @@ async function gameLoop() {
       G.lastSteps = 0;
       const beforePos = p.pos;
       await playTurnWrapped(p);
+      if (UI.hideTrusteeBar) UI.hideTrusteeBar();
     }
     G.turn = (G.turn + 1) % G.players.length;
     if (G.turn === 0 && !G.over) { await endDay(); if (G.settings.autosave) saveGame(); }
@@ -2119,6 +2174,231 @@ function loadGame(slot = 0) {
     return true;
   } catch (e) { return false; }
 }
+
+/* ---------- 電腦玩家卡片／道具決策（還原 rich4.exe FUN_00441BAA／FUN_0041E69E／FUN_00447D97／FUN_00420E9A 與 0x475324、0x47539C 判斷表） ----------
+   原版流程：每回合行動前，電腦最多檢視 8 張卡（超過 8 張時由亂數起點輪轉），逐張做兩層判斷：
+   1. 卡片攻擊性（卡表 0x47FDEA 第 8 byte：0／1／2）減去個性（0 保守／1 普通／2 積極）：差 >1 不用、差 =1 僅 1/3 機率、否則進入各卡專屬判斷函數。
+   2. 各卡判斷函數（0x475324 表）決定是否使用以及目標。一回合最多用一張卡；道具同理（0x47539C 表，最多嘗試 4 件，時光機永不使用）。
+   「畫面內」= 原版以玩家為中心 640×480 視窗內的格子（FUN_0040A45C）；「前方 N 格」= FUN_0040B221 沿前進方向展開（遇岔路亂數決定，烏龜卡／遙控骰子遇岔路即放棄）。 */
+const CARD_AGGR = [2, 2, 1, 0, 0, 0, 0, 1, 0, 2, 2, 1, 2, 0, 2, 1, 2, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0];   // 卡 0..29
+const ITEM_AGGR = [0, 1, 1, 1, 0, 0, 2, 0, 1, 2, 1, 2, 2];                                                   // 道具 0..12
+const AI = {
+  pers(p) { return clamp((p.ai || 1) - 1, 0, 2); },
+  hated(p) { let best = -1, bv = 0; p.grudge.forEach((v, i) => { if (i !== p.id && !G.players[i].bankrupt && v > bv) { bv = v; best = i; } }); return best; },
+  /** 畫面內格子（以玩家所在格為中心 640×480） */
+  view(p) { const c = cell(p.pos); const out = []; for (let i = 1; i < MAP.cells.length; i++) { const x = cell(i); if (!x[3] || !x[3].length) continue; if (Math.abs(x[0] - c[0]) <= 320 && Math.abs(x[1] - c[1]) <= 240) out.push(i); } return out; },
+  /** 前方 n 格（沿前進方向），回傳 {cells, fork} */
+  ahead(p, n) { const cells = []; let cur = p.pos, prev = p.prev, fork = false; for (let k = 0; k < Math.min(n, 8); k++) { const nx = nextCells(cur, prev); if (!nx.length) break; if (nx.length > 1) fork = true; const pick1 = nx[rnd(nx.length)]; cells.push(pick1); prev = cur; cur = pick1; } return { cells, fork }; },
+  /** 周圍（前後各 n 格） */
+  around(p, n) { const s = new Set(this.ahead(p, n).cells); let b = p.prev, bp = p.pos; for (let k = 0; k < n && b > 0; k++) { s.add(b); const nx = nextCells(b, bp).filter(x => x !== bp); bp = b; b = nx.length ? nx[rnd(nx.length)] : -1; } return [...s]; },
+  landOf(ci) { return landAt(ci); }, commOf(ci) { return commAt(ci); },
+  street(l) { return LD(l)[2]; },
+  myOnStreet(p, l) { return G.lands.filter(x => x !== l && this.street(x) === this.street(l) && x.owner === p.id + 1).length; },
+  othersOnStreet(p, l) { return G.lands.filter(x => this.street(x) === this.street(l) && x.owner && x.owner !== p.id + 1); },
+  playersInView(p) { const v = new Set(this.view(p)); return others(p).filter(q => v.has(q.pos)); },
+  rentAt(l) { return rentOf(l, l.owner - 1); },
+  /** FUN_0041E8E6：購地／換地目標是否合適 */
+  acquirable(p, hated, x, isComm) {
+    if (!x || !x.owner || x.owner === p.id + 1 || !x.level) return false;
+    if (isComm) return true;
+    if (this.myOnStreet(p, x) > 0) return true;
+    return hated >= 0 && x.owner === hated + 1 && x.level >= 2;
+  },
+  /* ===== 卡片判斷（回傳 null 不用；否則回傳目標描述） ===== */
+  cardPlan(p, id) {
+    const idx = G.priceIdx, hated = this.hated(p), l0 = landAt(p.pos), c0 = commAt(p.pos);
+    const inView = this.playersInView(p), view = this.view(p);
+    const alive = alivePlayers();
+    switch (id) {
+      case 0: { const avg = Math.floor(alive.reduce((a, q) => a + q.cash, 0) / alive.length); return (avg > p.cash * 10 && p.cash < 3000 * idx) ? {} : null; }
+      case 1: { const h = inView.find(q => q.id === hated); if (h && h.cash > 30000 * idx && h.cash > p.cash * 2) return { player: h }; let t = null; inView.forEach(q => { if (q.cash > 50000 * idx && q.cash > p.cash * 3) t = q; }); return t ? { player: t } : null; }
+      case 2: { const x = l0 || c0; if (!x || !this.acquirable(p, hated, x, !!c0)) return null; const mv = l0 ? marketValue(l0) : Math.round((c0.level + 2) / 5 * CD(c0)[3] * idx); return p.cash > mv ? {} : null; }
+      case 3: { if (c0) return null;   // 商業用地互換：目前版本僅支援住宅用地
+        if (!l0 || l0.owner !== p.id + 1 || l0.level > 1 || this.myOnStreet(p, l0) > 0) return null;
+        for (const ci of view) { const t = landAt(ci); if (t && this.street(t) !== this.street(l0) && LD(t)[3] > LD(l0)[3] && t.level > l0.level && this.acquirable(p, hated, t, false)) return { land: t }; } return null; }
+      case 4: case 5: return null;
+      case 6: { if (c0) { if (c0.owner === p.id + 1 && c0.kind === 0 && c0.level === 1) return { kind: 1 + rnd(4) }; return null; }
+        if (!l0 || l0.owner !== p.id + 1) return null;
+        if (l0.chain) return this.myOnStreet(p, l0) > 0 ? {} : null;
+        if (l0.level !== 1 || this.pers(p) === 0) return null;
+        const bad = G.lands.some(x => x !== l0 && this.street(x) === this.street(l0) && (x.owner === p.id + 1 || !x.owner)); return bad ? null : {}; }
+      case 7: { const x = l0 || c0; if (!x || !x.owner || x.owner === p.id + 1) return null; if (x.level >= 3) return {}; return (hated >= 0 && x.owner === hated + 1 && x.level >= 2) ? {} : null; }
+      case 8: { const groups = {}; view.forEach(ci => { const l = landAt(ci); if (l && l.owner === p.id + 1 && !l.chain && l.level < 5) { const s = this.street(l); (groups[s] = groups[s] || new Set()).add(l); } }); const ok = Object.values(groups).filter(s => s.size >= 3); if (!ok.length) return null; const s = ok[rnd(ok.length)]; return { land: [...s][0] }; }
+      case 9: { const groups = {}; view.forEach(ci => { const l = landAt(ci); if (l && l.owner && !l.chain) { const s = this.street(l); const g = groups[s] = groups[s] || { lands: new Set(), cnt: [0, 0, 0, 0], lv: [0, 0, 0, 0] }; if (!g.lands.has(l)) { g.lands.add(l); g.cnt[l.owner - 1]++; g.lv[l.owner - 1] += l.level; } } });
+        for (const g of Object.values(groups)) { const first = [...g.lands].find(l => l.level > 0); if (!first) continue;
+          if (hated >= 0) { if (g.cnt[hated] >= 2 && g.lv[hated] > 6 && g.cnt[p.id] < 2) return { land: first }; }
+          else { let c = 0, lv = 0; alive.forEach(q => { if (q.id !== p.id) { c += g.cnt[q.id]; lv += g.lv[q.id]; } }); if (g.cnt[p.id] === 0 && c > 2 && lv > 8) return { land: first }; } }
+        return null; }
+      case 10: return this.monsterTarget(p, hated, view);
+      case 11: { const m = this.monsterTarget(p, hated, view); if (m) return m;
+        for (const ci of view) { const l = landAt(ci), c = commAt(ci); if (l && l.owner && l.owner !== p.id + 1 && l.chain && this.pers(p) !== 0 && G.lands.filter(x => x.owner === l.owner).length > 3) return { land: l };
+                    const ri = G.roadItems[ci]; if (ri) { const x = l || c; if (ri.type === 16 && x && x.owner && x.owner !== p.id + 1) return { road: ci }; if (ri.type === 17 && x && x.owner === p.id + 1) return { road: ci }; } }
+        return null; }
+      case 12: { const price = c => CARDS[c].price; const h = inView.find(q => q.id === hated); if (h) { const cs = h.cards.filter(c => CARD_AGGR[c] !== 0); if (cs.length) { cs.sort((a, b) => price(b) - price(a)); return { player: h, card: cs[0] }; } }
+        let best = null; inView.forEach(q => q.cards.forEach(c => { if (CARD_AGGR[c] === 2 && (!best || price(c) > price(best.card))) best = { player: q, card: c }; })); return best; }
+      case 13: { if (!p.status.stay && !p.turtle) { if (c0 && c0.owner === p.id + 1 && CD(c0)[4] * idx < p.cash && p.cash > 10000 && c0.kind > 0 && c0.kind !== 3 && c0.level < 5) return { player: p };
+          if (l0 && l0.owner === p.id + 1 && !l0.chain && l0.level < 5 && LD(l0)[4] * idx < p.cash && p.cash + p.deposit > 10000 && (this.myOnStreet(p, l0) > 0 || l0.level >= 2)) return { player: p }; }
+        for (const q of inView) { const c = commAt(q.pos), k = compAt(q.pos); if (c && c.owner === p.id + 1 && c.kind > 0 && c.level >= 2) return { player: q }; if (k && k.chairman === p.id + 1) return { player: q }; } return null; }
+      case 14: { if (rnd(4) !== 0) return null; const h = others(p).find(q => q.id === hated); const t = h || (others(p).length ? others(p)[rnd(others(p).length)] : null); return t ? { player: t } : null; }
+      case 15: case 16: { const cands = inView.filter(q => !statusActive(q) && !hasCard(q, 17)); if (!cands.length) return null; const h = cands.find(q => q.id === hated); return { player: h || cands[rnd(cands.length)] }; }
+      case 17: case 18: case 19: case 20: return null;
+      case 21: { if (!p.god) return (p.bomb > 0 && p.bomb <= 12) ? {} : null; return [5, 6, 7, 8, 10, 15].includes(p.god) ? {} : null; }
+      case 22: { if ([1, 2, 3, 4, 12].includes(p.god)) return null; const gods = G.npcs.filter(n => n.host < 0 && n.type <= 15 && n.type !== 11 && n.type !== 13 && n.type !== 14); if (!gods.length) return null; const c = cell(p.pos); let best = null, bd = 1e9; gods.forEach(n => { const d = Math.hypot(cell(n.cell)[0] - c[0], cell(n.cell)[1] - c[1]); if (d < bd) { bd = d; best = n; } }); return [1, 2, 3, 4, 12].includes(best.type) ? {} : null; }
+      case 23: { if (G.marketStop || isWeekend(G.date)) return null; let best = -1, bv = 0; G.stocks.forEach((s, i) => { const v = Math.round(p.stocks[i].q * s.price); if (v > bv && !s.suspend && s.forced !== 1) { bv = v; best = i; } }); return best >= 0 ? { stock: best } : null; }
+      case 24: { if (G.marketStop || isWeekend(G.date)) return null; const cnt = [0, 0, 0, 0]; G.lands.forEach(l => { if (l.owner) cnt[l.owner - 1]++; }); let rich = -1, rc = 0; cnt.forEach((n, i) => { if (i !== p.id && n > rc) { rc = n; rich = i; } });
+        const bestOf = who => { let b = -1, bv = 0; if (who < 0) return -1; G.stocks.forEach((s, i) => { const v = Math.round(G.players[who].stocks[i].q * s.price); if (v > bv && s.shares > 0 && !s.suspend && !p.stocks[i].q && s.forced !== -1) { bv = v; b = i; } }); return b; };
+        const a = bestOf(rich), b = bestOf(hated); const s = b >= 0 ? b : a; return s >= 0 ? { stock: s } : null; }
+      case 25: { const h = inView.find(q => q.id === hated); if (h && h.cash > 30000 * idx) return { player: h }; let t = null; inView.forEach(q => { if (q.cash > 50000 * idx) t = q; }); return t ? { player: t } : null; }
+      case 26: { const groups = {}; view.forEach(ci => { const l = landAt(ci); if (l && !l.chain) { const s = this.street(l); if (!groups[s]) groups[s] = l; } });
+        for (const l of Object.values(groups)) { const all = G.lands.filter(x => this.street(x) === this.street(l)); let mine = 0, mineLv = 0, oth = 0, hatedHere = false; all.forEach(x => { if (x.owner === p.id + 1) { mine++; mineLv += x.level; } else if (x.owner) { oth += x.level; if (hated >= 0 && x.owner === hated + 1) hatedHere = true; } }); if (!hatedHere && mineLv > 6 && oth < 4 && mine / all.length >= 0.66) return { land: all.find(x => x.owner === p.id + 1) }; }
+        return null; }
+      case 27: { const { cells } = this.ahead(p, 6); const seen = new Set(); for (const ci of cells) { const l = landAt(ci); if (!l) continue; const s = this.street(l); if (seen.has(s)) continue; seen.add(s); const all = G.lands.filter(x => this.street(x) === s); if (all.some(x => x.owner === p.id + 1)) continue; const lv = all.reduce((a, x) => a + (x.owner ? x.level : 0), 0); if (lv > 6) { const t = all.find(x => x.owner); if (t) return { land: t }; } } return null; }
+      case 28: { const cands = inView.filter(q => q.id !== hated && q.ally !== p.id); if (!cands.length) return null; let best = -1, bc = 0; others(p).forEach(q => { const n = G.lands.filter(x => x.owner === q.id + 1).length + G.comm.filter(x => x.owner === q.id + 1).length; if (n > bc) { bc = n; best = q.id; } }); const t = cands.find(q => q.id === best); return t ? { player: t } : null; }
+      case 29: { if (!p.turtle) { const { cells, fork } = this.ahead(p, 3); if (!fork && cells.length === 3) { let sum = 0, n = 0, abort = false; for (const ci of cells) { const l = landAt(ci), c = commAt(ci), k = compAt(ci);
+            if (l) { if (!l.owner) { sum += LD(l)[3]; n++; } else if (l.owner === p.id + 1 && !l.chain && l.level < 5) { sum += LD(l)[4]; n++; } if (l.owner && l.owner !== p.id + 1 && this.rentAt(l) > 1000 * idx) abort = true; }
+            else if (c) { if (!c.owner) { sum += CD(c)[3]; n++; } else if (c.owner === p.id + 1 && c.kind > 0 && c.kind !== 3 && c.level < 5) { sum += CD(c)[4]; n++; } if (c.owner && c.owner !== p.id + 1 && c.kind > 0 && c.kind !== 4 && c.level > 0) abort = true; }
+            else if (k && k.chairman && k.chairman !== p.id + 1) abort = true; }
+          if (!abort && sum * 1.5 < p.cash && n >= 2 && p.cash + p.deposit > 10000) return { player: p }; } }
+        for (const q of inView) { if (q.turtle) continue; const { cells, fork } = this.ahead(q, 3); if (fork || cells.length < 3) continue; let sum = 0, n = 0, abort = false; for (const ci of cells) { const l = landAt(ci), c = commAt(ci), k = compAt(ci); const x = l || c;
+            if (l && l.owner === p.id + 1) { sum += rentOf(l, p.id); n++; } else if (c && c.owner === p.id + 1 && c.kind > 0 && c.kind !== 4 && c.level) { sum += CD(c)[5][c.level - 1]; n++; } else if (k && k.chairman === p.id + 1) { sum += KD(k)[4]; n++; }
+            if (x && (!x.owner || x.owner === q.id + 1)) { abort = true; break; } if (k && (!k.chairman || k.chairman === q.id + 1)) { abort = true; break; } }
+          if (!abort && sum >= 10000 * idx && n >= 2) return { player: q }; }
+        return null; }
+    }
+    return null;
+  },
+  /** FUN_0041F400：怪獸卡目標（畫面內他人 ≥3 級建築；優先仇人、同級取地價高者） */
+  monsterTarget(p, hated, view) {
+    const cands = []; view.forEach(ci => { const l = landAt(ci); if (l && l.owner && l.owner !== p.id + 1 && l.level > 2) cands.push({ x: l, l: true, lv: l.level, pr: LD(l)[3] }); });
+    if (!cands.length) return null; const key = (a, b) => b.lv - a.lv || b.pr - a.pr;
+    const h = cands.filter(k => k.x.owner === hated + 1); const pool = (hated >= 0 && h.length) ? h : cands; pool.sort(key); const t = pool[0]; return t.l ? { land: t.x } : { comm: t.x };
+  },
+  /* ===== 道具判斷 ===== */
+  itemPlan(p, id) {
+    const idx = G.priceIdx, hated = this.hated(p), view = this.view(p);
+    switch (id) {
+      case 0: { const { cells, fork } = this.ahead(p, 4); if (fork) return null; for (const ci of cells) { const n = G.npcs.find(x => x.cell === ci && x.host < 0); const l = landAt(ci); const x = l || commAt(ci); if (n && [5, 6, 7, 8, 11].includes(n.type)) return {}; const ri = G.roadItems[ci]; if (ri && ri.type === 17 && x && x.owner === p.id + 1) return {}; if (ri && ri.type === 16 && l && l.owner && l.owner !== p.id + 1 && this.rentAt(l) > 3000 * idx) return {}; } return null; }
+      case 1: { const { cells, fork } = this.ahead(p, 4); if (!fork) for (const ci of cells) { if (G.roadItems[ci] || G.npcs.some(n => n.cell === ci && n.host < 0)) continue; const l = landAt(ci), c = commAt(ci);
+          if (cellKind(ci) === 15 && p.points > 200) return { cell: ci };
+          if (c && !c.owner && p.cash + p.deposit > 10000 && !p.turtle && !p.status.stay && CD(c)[3] * idx > p.cash) return { cell: ci };
+          if (l && !l.owner && (this.myOnStreet(p, l) >= 2 || l.level > 0) && p.cash + p.deposit > 10000 && !p.turtle && !p.status.stay && LD(l)[3] * idx > p.cash) return { cell: ci }; }
+        let best = null, br = 6000 * idx; for (const ci of this.around(p, 6)) { const l = landAt(ci); if (l && l.owner === p.id + 1 && !G.roadItems[ci]) { const r = rentOf(l, p.id); if (r > br) { br = r; best = ci; } } } return best ? { cell: best } : null; }
+      case 2: { const cands = this.around(p, 6).filter(ci => { if (G.roadItems[ci] || ci === p.pos) return false; const x = landAt(ci) || commAt(ci); return x && x.owner && x.owner !== p.id + 1; }); return cands.length ? { cell: cands[rnd(cands.length)] } : null; }
+      case 3: { const cands = this.around(p, 6).filter(ci => !G.roadItems[ci] && ci !== p.pos && cellKind(ci) !== 4 && cellKind(ci) !== 5); return cands.length ? { cell: cands[rnd(cands.length)] } : null; }
+      case 4: return (!p.vehicle && rnd(4) === 0) ? {} : null;
+      case 5: return (p.vehicle < 2 && rnd(4) === 0) ? {} : null;
+      case 6: { let t = hated >= 0 ? G.players[hated] : null; if (!t || t.bankrupt) { const o = others(p); t = o.length ? o[rnd(o.length)] : null; } if (!t) return null; if (!view.includes(t.pos)) return null; const c = cell(t.pos); for (let i = 1; i < MAP.cells.length; i++) { const x = cell(i); if (Math.hypot(x[0] - c[0], x[1] - c[1]) > 100) continue; if (alivePlayers().some(q => q.id !== t.id && q.pos === i)) return null; const l = landAt(i) || commAt(i); if (l && l.owner === p.id + 1) return null; } return { cell: t.pos }; }
+      case 7: { if (hasBadGod(p) || p.status.stay || p.cash + p.deposit < 10000 || p.turtle) return null; const { cells, fork } = this.ahead(p, 6); if (fork) return null; let best = null, blv = 0;
+        for (let i = 0; i < cells.length; i++) { const ci = cells[i]; if (G.roadItems[ci] || G.npcs.some(n => n.cell === ci && n.host < 0)) continue; const l = landAt(ci), c = commAt(ci);
+          if (c) { if (!c.owner) { if (p.cash > CD(c)[3] * idx * 2.5) return { steps: i + 1 }; } else if (c.owner === p.id + 1 && c.kind > 0 && c.kind !== 3 && c.level < 5 && p.cash > CD(c)[4] * idx * 2.5) return { steps: i + 1 }; }
+          else if (l) { if (!l.owner) { if (this.myOnStreet(p, l) >= 2 && p.cash > LD(l)[3] * idx * 2.5) return { steps: i + 1 }; } else if (l.owner === p.id + 1 && !l.chain && l.level < 5 && this.myOnStreet(p, l) >= 2 && p.cash > LD(l)[4] * idx * 2.5 && l.level > blv) { blv = l.level; best = i + 1; } } }
+        return best ? { steps: best } : null; }
+      case 8: { let best = null, bv = 0; view.forEach(ci => { const l = landAt(ci), c = commAt(ci); if (l && l.owner === p.id + 1 && !l.chain && l.level < 5) { const v = LD(l)[5][l.level + 1] || 0; if (v > bv) { bv = v; best = { land: l }; } } else if (c && c.owner === p.id + 1 && c.kind >= 0 && c.level < FACILITY[c.kind].max) { const v = CD(c)[5][c.level] || 0; if (v > bv) { bv = v; best = { comm: c }; } } }); return best && best.land ? best : null; }
+      case 9: return null;
+      case 10: { if (p.cash + p.deposit <= 10000 || p.turtle) return null; let best = null, blv = 0; view.forEach(ci => { const l = landAt(ci), c = commAt(ci); if (l && !l.owner && !l.chain && l.level > 2 && l.level > blv && LD(l)[4] * idx < p.cash) { blv = l.level; best = ci; } else if (c && !c.owner && c.kind > 0 && c.level > 2 && c.level > blv && CD(c)[4] * idx < p.cash) { blv = c.level; best = ci; } }); return best ? { player: p, cell: best } : null; }
+      case 11: return (p.vehicle < 2 && rnd(15) <= this.pers(p)) ? {} : null;
+      case 12: { const cands = []; G.lands.forEach(l => { if (l.owner && l.owner !== p.id + 1 && l.level) cands.push(cellsOfLand(l)[0]); }); G.comm.forEach(c => { if (c.owner && c.owner !== p.id + 1 && c.level) cands.push(cellsOfComm(c)[0]); }); const ok = cands.filter(ci => ci !== undefined); if (!ok.length) return null;
+        for (let tries = 0; tries < 3; tries++) { const ci = ok[rnd(ok.length)]; const c = cell(ci); let mine = 0, theirs = 0, bad = false; for (let i = 1; i < MAP.cells.length; i++) { const x = cell(i); if (Math.abs(x[0] - c[0]) > 150 || Math.abs(x[1] - c[1]) > 150) continue; if (alivePlayers().some(q => q.pos === i)) { bad = true; break; } const y = landAt(i) || commAt(i); if (y && y.level) { if (y.owner === p.id + 1) mine += y.level; else theirs += y.level; } } if (!bad && theirs > 6 && mine === 0) return { cell: ci }; } return null; }
+    }
+    return null;
+  },
+  /** 攻擊性閘門（FUN_0041E69E／FUN_00420E9A） */
+  gate(aggr, p) { const d = aggr - this.pers(p); if (d > 1) return false; if (d === 1 && rnd(3) !== 0) return false; return true; },
+  /** 回合開始：決定是否用卡（最多一張） */
+  async useCards(p) {
+    if (!p.cards.length) return;
+    const n = p.cards.length; let start = n > 8 ? rnd(n) : 0; const tried = [];
+    for (let k = 0; k < Math.min(8, n); k++) { const id = p.cards[(start + k) % n]; if (tried.includes(id)) continue; tried.push(id);
+      if (!this.gate(CARD_AGGR[id], p)) continue;
+      const plan = this.cardPlan(p, id); if (!plan) continue;
+      G.aiPlan = plan; const ok = await useCard(p, id); G.aiPlan = null;
+      if (ok) { removeCard(p, id); log(`${p.name} 使用 ${CARDS[id].name}`); return; } }
+  },
+  /** 回合開始：決定是否用道具（最多嘗試 4 件，時光機不用）；回傳 'remote' 代表遙控骰子 */
+  async useItems(p) {
+    const have = Object.keys(p.items).map(Number).filter(k => p.items[k] > 0 && k !== 9); if (!have.length) return null;
+    let i = have.length >= 5 ? rnd(have.length) : 0;
+    for (let t = 0; t < Math.min(4, have.length); t++, i = (i + 1) % have.length) { const id = have[i];
+      if (!this.gate(ITEM_AGGR[id], p)) continue;
+      const plan = this.itemPlan(p, id); if (!plan) continue;
+      if (id === 7) { G.aiPlan = plan; return 'remote'; }
+      if (id === 4 || id === 5) { if (id === 4) { p.items[4]--; p.vehicle = 1; p.dice = 2; } else { p.items[5]--; if (p.vehicle) loseVehicle(p); p.vehicle = 2; p.dice = 3; } await UI.toast(`${p.name} 使用 ${ITEMS[id].name}`); return null; }
+      G.aiPlan = plan; const ok = await useItem(p, id); G.aiPlan = null;
+      if (ok) { consumeItem(p, id); log(`${p.name} 使用 ${ITEMS[id].name}`); return p.teleported ? 'teleported' : null; } }
+    return null;
+  },
+};
+
+/* ===== 股票 AI（FUN_0042BF03 買進／FUN_0042C79F 賣出 的評分制簡化還原） ===== */
+AI.stockBuy = async function (p) {
+  const idx = G.priceIdx;
+  if (rnd(3) !== 0 || !(p.stockPct > 0) || G.marketStop || isWeekend(G.date)) return;
+  if (p.lastStockBuy !== undefined && G.day - p.lastStockBuy < 15) return;
+  let hold = 0; G.stocks.forEach((s, i) => hold += Math.round(p.stocks[i].q * s.price));
+  const target = Math.floor((hold + p.deposit + p.cash) * p.stockPct / 100);
+  if (hold >= target) return;
+  const budget = Math.min(target - hold, p.deposit); if (budget <= 0) return;
+  const mean = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+  const scored = G.stocks.map((s, i) => {
+    let sc = 0; const avail = s.avail === undefined ? s.shares : s.avail;
+    if (s.suspend || s.forced === 1 || avail <= 0) return { i, sc: 0 };
+    const avg24 = mean(s.hist.slice(-24)), avg6 = mean(s.hist.slice(-6));
+    if (s.comp < 0) {
+      if (p.deposit > 30000 * idx) {
+        if (s.price < s.base * 2.5 && s.vol >= 2 && avg24 < avg6) sc += 2;
+        if (s.price < s.base * 0.6 && avg24 < avg6) sc += 4;
+        if (avg6 < avg24 * 0.5) sc += 2;
+      }
+    } else if (p.deposit > 20000 * idx) {
+      const k = G.comps[s.comp]; const months = Math.max(1, Math.floor(G.day / 30)); const profit = k.profit / months; const cp = s.base;
+      if (profit > 0 && profit < 5000 * idx) sc += 1; else if (profit >= 5000 * idx && profit < 10000 * idx) sc += 2; else if (profit >= 10000 * idx) sc += 3;
+      if (p.stocks[i].q < 5000 && s.price <= cp * 1.2) { sc += 1; if (k.chairman && k.chairman !== p.id + 1) { const ch = G.players[k.chairman - 1]; if (ch.stocks[i].q < avail + p.stocks[i].q) sc += 1; if (ch.stocks[i].q < p.stocks[i].q + avail) sc += 2; } }
+      if (s.price < cp * 0.85) sc += 3; if (s.price < cp * 0.7) sc += 5;
+    }
+    return { i, sc };
+  }).sort((a, b) => b.sc - a.sc);
+  let pickI = -1;
+  for (let r = 0; r < scored.length; r++) { if (scored[r].sc > 0 && rnd(24) <= 12 - r) { pickI = scored[r].i; break; } }
+  if (pickI < 0) return;
+  const s = G.stocks[pickI]; let n = Math.round(budget / s.price); const avail = s.avail === undefined ? s.shares : s.avail; if (n > avail) n = avail;
+  if (n > 0 && await buyStock(p, pickI, n, false)) { p.lastStockBuy = G.day; await UI.toast(`${p.name} 買進 ${MAP.stocks[pickI][0]} ${n} 股`); }
+};
+AI.stockSell = async function (p) {
+  const idx = G.priceIdx;
+  let forced = false;
+  if (p.loan && p.loanDue && dateDiff(G.date, p.loanDue) < 7 && p.cash + p.deposit < p.loan) forced = true;
+  if (!forced && rnd(3) !== 0) return;
+  if (G.marketStop || isWeekend(G.date)) return;
+  const mean = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+  let best = -1, bs = 0;
+  G.stocks.forEach((s, i) => {
+    const h = p.stocks[i]; if (!h.q || s.suspend || s.forced === -1) return;
+    let sc = 0; const ratio = h.cost > 0 ? s.price / h.cost : 1; const d = G.date.d;
+    if (s.comp < 0) {
+      const mn = Math.min(...s.hist), avg24 = mean(s.hist.slice(-24)), avg6 = mean(s.hist.slice(-6));
+      if (ratio > 1.6 && s.vol < 1) sc += 2;
+      if (s.price > mn * 8 && h.cost * 1.25 < mn * 8) sc += 2;
+      if (avg6 < avg24 && s.price < s.prev) sc += 2;
+      if (ratio >= 2) sc += Math.round(ratio);
+      if (p.cash + p.deposit < 30000 * idx && ratio > 0) sc += Math.round(ratio);
+      if (p.cash + p.deposit < 16000 * idx && ratio > 0) sc += Math.round(ratio);
+      if (forced) sc *= 2;
+    } else {
+      const k = G.comps[s.comp]; const months = Math.max(1, Math.floor(G.day / 30)); const profit = k.profit / months; const cp = s.base;
+      let total = 0; alivePlayers().forEach(q => total += q.stocks[i].q); const share = h.q / Math.max(1, total);
+      const isChair = k.chairman === p.id + 1;
+      if (k.profit <= -10000 * idx && share > 0.6 && d > 10 && d < 15) sc += 3;
+      if (k.profit <= -6000 * idx && s.price > h.cost * 1.2 && !isChair && d > 8 && d < 15) sc += 2;
+      if (profit <= 10000 * idx && s.price >= cp * 2 && s.price > h.cost * 1.3 && share < 0.4) sc += 1;
+      if (k.chairman && !isChair) { const ch = G.players[k.chairman - 1]; const avail = s.avail === undefined ? s.shares : s.avail; if (h.q + avail < ch.stocks[i].q && k.profit < 1 && s.price >= h.cost * 1.5) sc += 1; }
+      if (s.price > cp * 2 && s.price > h.cost * 2 && s.price < s.prev && !isChair) sc += 2;
+      if (s.price > cp * 3 && s.price > h.cost * 3 && s.price < s.prev && isChair) sc += 2;
+      if (forced) sc += 1;
+    }
+    if (sc > bs) { bs = sc; best = i; }
+  });
+  if (best >= 0) { const n = p.stocks[best].q; const v = sellStock(p, best, n); await UI.toast(`${p.name} 賣出 ${MAP.stocks[best][0]} ${n} 股（${fmt(v)}）`); }
+};
 
 /* ===== UI 層 v2：手機優先介面，沿用原版面板／按鈕／對話框美術 ===== */
 'use strict';
@@ -2351,7 +2631,7 @@ const UI = {
   confirm(text, yes = '是', no = '否') { return this.dialog({ text, portrait: this.curPortrait(), buttons: [{ label: yes, value: true, cls: 'ok' }, { label: no, value: false, cls: 'gray' }] }); },
   choose(title, options) { return this.dialog({ text: title, list: options }); },
   toast(text) { const t = $('#toast'); while (t.children.length >= 3) t.firstChild.remove(); const d = el('div', 'tt', this.esc(text)); t.appendChild(d); setTimeout(() => d.classList.add('show'), 10); setTimeout(() => { d.classList.remove('show'); setTimeout(() => d.remove(), 300); }, 1800); return Promise.resolve(); },
-  async choosePlayer(p, title, list) { if (!p.human) { const o = list.filter(q => q.id !== p.id); return o.length ? o[rnd(o.length)] : null; } const v = await this.dialog({ text: title, list: list.map(q => ({ label: q.name + (q.id === p.id ? '（自己）' : ''), value: q.id, icon: this.portrait(q.ch, 36), sub: `現金 ${fmt(q.cash)}` })).concat([{ label: '取消', value: null }]) }); return v === null || v === undefined ? null : G.players[v]; },
+  async choosePlayer(p, title, list) { if (!p.human) { if (G.aiPlan && G.aiPlan.player && list.includes(G.aiPlan.player)) return G.aiPlan.player; const o = list.filter(q => q.id !== p.id); return o.length ? o[rnd(o.length)] : null; } const v = await this.dialog({ text: title, list: list.map(q => ({ label: q.name + (q.id === p.id ? '（自己）' : ''), value: q.id, icon: this.portrait(q.ch, 36), sub: `現金 ${fmt(q.cash)}` })).concat([{ label: '取消', value: null }]) }); return v === null || v === undefined ? null : G.players[v]; },
   pickCell(cands, title) { return new Promise(res => { this.pickMode = { cands, resolve: res }; const bar = $('#pickbar'); bar.classList.remove('hide'); bar.innerHTML = `<span>${this.esc(title)}</span><button class="btn gray" id="pickcancel" style="min-height:36px;padding:4px 12px">取消</button>`; $('#pickcancel').onclick = () => { this.pickMode = null; bar.classList.add('hide'); this.dirty = true; res(null); }; this.dirty = true; }); },
   /** 數字輸入：原版 ATM 鍵盤風格 */
   number(title, max, step = 100, def) {
@@ -2525,8 +2805,9 @@ const UI = {
   },
   /* ---------- 系統 ---------- */
   async systemMenu(p) {
-    const v = await this.choose('系統', [{ label: '儲存進度', value: 'save' }, { label: `遊戲速度：${['慢', '中', '快'][this.speed - 1]}`, value: 'speed' }, { label: `電腦回合訊息：${this.autoSkip ? '自動略過' : '逐一顯示'}`, value: 'skip' }, { label: `音樂：${Music.enabled ? '開' : '關'}`, value: 'music' }, { label: `音量：${Math.round(Music.volume * 100)}%`, value: 'vol' }, { label: `音效：${Sfx.enabled ? '開' : '關'}`, value: 'sfx' }, { label: `語音：${Sfx.voiceOn ? '開' : '關'}`, value: 'voice' }, { label: `音樂音源：${Music.useMp3 ? '原版 GM 音源' : '內建合成器'}`, value: 'synth' }, { label: '音樂欣賞', value: 'jukebox' }, { label: '遊戲說明', value: 'help' }, { label: '認輸投降', value: 'surrender' }, { label: '回主選單（不存檔）', value: 'quit' }, { label: '返回', value: null }]);
+    const v = await this.choose('系統', [{ label: '儲存進度', value: 'save' }, { label: '託管ＡＩ', value: 'trustee' }, { label: `遊戲速度：${['慢', '中', '快'][this.speed - 1]}`, value: 'speed' }, { label: `電腦回合訊息：${this.autoSkip ? '自動略過' : '逐一顯示'}`, value: 'skip' }, { label: `音樂：${Music.enabled ? '開' : '關'}`, value: 'music' }, { label: `音量：${Math.round(Music.volume * 100)}%`, value: 'vol' }, { label: `音效：${Sfx.enabled ? '開' : '關'}`, value: 'sfx' }, { label: `語音：${Sfx.voiceOn ? '開' : '關'}`, value: 'voice' }, { label: `音樂音源：${Music.useMp3 ? '原版 GM 音源' : '內建合成器'}`, value: 'synth' }, { label: '音樂欣賞', value: 'jukebox' }, { label: '遊戲說明', value: 'help' }, { label: '認輸投降', value: 'surrender' }, { label: '回主選單（不存檔）', value: 'quit' }, { label: '返回', value: null }]);
     if (v === 'save') { const s = await this.savePanel('save'); if (s !== null) await this.msg(`已儲存至第 ${s} 格。`); }
+    if (v === 'trustee') await this.trusteeDialog(p);
     if (v === 'speed') { this.speed = this.speed % 3 + 1; }
     if (v === 'skip') { this.autoSkip = !this.autoSkip; }
     if (v === 'music') { Music.setEnabled(!Music.enabled); $('#top .mbtn').textContent = Music.enabled ? '🔊' : '🔇'; }
@@ -2537,6 +2818,21 @@ const UI = {
     if (v === 'surrender') { if (await this.confirm(`${p.name} 確定認輸投降？\n魔法屋的女巫會替您召喚死神。`)) { const t = await this.choosePlayer(p, '你要死神附身在誰身上？', others(p)); await goBankrupt(p); if (t) { await possess(t, { type: 15, cell: t.pos, host: -1 }); } } }
     if (v === 'quit') { if (await this.confirm('確定回到主選單？未存檔的進度會遺失。')) location.reload(); }
   },
+  /** 託管ＡＩ（原版 FUN_0041E345 視窗：個性 乖寶寶／普通人／大老奸、使用卡片、使用道具） */
+  async trusteeDialog(p) {
+    const t = p.trustee || { cards: true, items: true, ai: p.ai || 2 };
+    while (true) {
+      const v = await this.choose('託管ＡＩ', [
+        { label: `個　性：${['乖寶寶', '普通人', '大老奸'][t.ai - 1]}`, value: 'ai' },
+        { label: `使用卡片：${t.cards ? '開' : '關'}`, value: 'cards' }, { label: `使用道具：${t.items ? '開' : '關'}`, value: 'items' },
+        { label: '確定（開始託管）', value: 'ok' }, { label: '取消', value: null }]);
+      if (!v) return;
+      if (v === 'ai') t.ai = t.ai % 3 + 1; if (v === 'cards') t.cards = !t.cards; if (v === 'items') t.items = !t.items;
+      if (v === 'ok') { p.trustee = t; p.ai = t.ai; p.human = false; await this.msg(`${p.name} 交由電腦託管。\n託管期間可按畫面上方「取消託管」收回控制權。`); return; }
+    }
+  },
+  trusteeBar(p) { const bar = $('#pickbar'); if (!bar) return; bar.classList.remove('hide'); bar.innerHTML = `<span>${this.esc(p.name)} 託管中（${['乖寶寶', '普通人', '大老奸'][(p.trustee.ai || 2) - 1]}）</span><button class="btn gray" id="trusteecancel" style="min-height:36px;padding:4px 12px">取消託管</button>`; $('#trusteecancel').onclick = () => { p.trustee = null; p.human = true; bar.classList.add('hide'); this.toast(`${p.name} 下回合起收回控制權`); }; },
+  hideTrusteeBar() { const bar = $('#pickbar'); if (bar && bar.querySelector('#trusteecancel')) bar.classList.add('hide'); },
   async systemOptions() {
     while (true) {
       const v = await this.choose('OPTION', [{ label: `音樂：${Music.enabled ? '開' : '關'}`, value: 'music' }, { label: `音量：${Math.round(Music.volume * 100)}%`, value: 'vol' }, { label: `音效：${Sfx.enabled ? '開' : '關'}`, value: 'sfx' }, { label: `語音：${Sfx.voiceOn ? '開' : '關'}`, value: 'voice' }, { label: `音樂音源：${Music.useMp3 ? '原版 GM 音源' : '內建合成器'}`, value: 'synth' }, { label: '音樂欣賞', value: 'jukebox' }, { label: '遊戲說明', value: 'help' }, { label: '返回', value: null }]);
@@ -2572,7 +2868,7 @@ const Setup = {
   },
   show() {
     const root = $('#setup'); root.classList.remove('hide'); $('#game').classList.add('hide');
-    const s = this.s; if (!s.players.length) s.players = [0, 1, 2, 3].map(i => ({ name: CHARACTERS[i].name, ch: i, human: i === 0, ai: 2 }));
+    const s = this.s; if (!s.players.length) s.players = [0, 1, 2, 3].map(i => ({ name: CHARACTERS[i].name, ch: i, human: i === 0, ai: CHARACTERS[i].pers + 1 }));
     root.style.backgroundImage = `url(${UIASSETS.scenes['setup' + s.mapId]})`;
     const opt = (arr, cur, key) => arr.map((o, i) => `<button class="seg ${i === cur ? 'on' : ''}" data-k="${key}" data-i="${i}">${typeof o === 'string' ? o : (o.n || o.name)}</button>`).join('');
     root.innerHTML = `
@@ -2602,7 +2898,7 @@ const Setup = {
       const inp = el('input'); inp.value = p.name; inp.maxLength = 6; row.appendChild(inp);
       const bh = el('button', 'seg' + (p.human ? ' on' : ''), '玩家'); const ba = el('button', 'seg' + (!p.human ? ' on' : ''), '電腦'); row.appendChild(bh); row.appendChild(ba);
       if (!p.human) { const sel = el('select'); sel.innerHTML = `<option value="1" ${p.ai === 1 ? 'selected' : ''}>乖寶寶</option><option value="2" ${p.ai === 2 ? 'selected' : ''}>普通人</option><option value="3" ${p.ai === 3 ? 'selected' : ''}>大老奸</option>`; sel.onchange = e => p.ai = +e.target.value; row.appendChild(sel); }
-      face.onclick = () => { const used = s.players.map(x => x.ch); let n = p.ch; do { n = (n + 1) % 12; } while (used.includes(n) && n !== p.ch); const wasDefault = p.name === CHARACTERS[p.ch].name; p.ch = n; if (wasDefault) p.name = CHARACTERS[n].name; this.renderPlayers(); };
+      face.onclick = () => { const used = s.players.map(x => x.ch); let n = p.ch; do { n = (n + 1) % 12; } while (used.includes(n) && n !== p.ch); const wasDefault = p.name === CHARACTERS[p.ch].name; const wasPers = p.ai === CHARACTERS[p.ch].pers + 1; p.ch = n; if (wasDefault) p.name = CHARACTERS[n].name; if (wasPers) p.ai = CHARACTERS[n].pers + 1; this.renderPlayers(); };
       inp.onchange = e => p.name = e.target.value.trim() || CHARACTERS[p.ch].name;
       bh.onclick = () => { p.human = true; this.renderPlayers(); }; ba.onclick = () => { p.human = false; this.renderPlayers(); };
       box.appendChild(row);
