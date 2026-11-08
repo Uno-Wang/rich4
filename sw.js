@@ -1,4 +1,4 @@
-const V='rich4-e047e186';const CORE=['./','index.html','manifest.json','icon.png'];
+const V='rich4-4d8abba4';const CORE=['./','index.html','manifest.json','icon.png'];
 self.addEventListener('install',e=>{e.waitUntil(caches.open(V).then(c=>c.addAll(CORE)).then(()=>self.skipWaiting()))});
 self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==V).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});
 self.addEventListener('fetch',e=>{const u=new URL(e.request.url);if(u.origin!==location.origin)return;
