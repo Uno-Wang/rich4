@@ -152,6 +152,22 @@ input{font:inherit}
   #scene .pic{width:auto;height:100%;aspect-ratio:4/3}
   #dlg{align-items:flex-end;justify-content:center}
 }
+/* 橫向手機：玩家欄改為左側直欄、指令列改為右側直欄，地圖佔中間（接近原版 640×480 橫向視野） */
+@media (orientation:landscape) and (max-height:540px){
+  #game{display:grid;grid-template-columns:104px 1fr 64px;grid-template-rows:calc(38px + var(--safe-t)) minmax(0,1fr)}
+  #top{grid-column:1/4;grid-row:1;height:calc(38px + var(--safe-t))}
+  #pstrip{grid-column:1;grid-row:2;flex-direction:column;overflow-y:auto;overflow-x:hidden;padding:4px;gap:4px}
+  .pc{flex:1 1 0;min-width:0;min-height:0;padding:2px 2px;justify-content:center}
+  .pc .port{width:34px;height:34px}
+  .pc .port .spr{transform:scale(.4722)}
+  .pc .nm{margin-top:0;font-size:11px}
+  .pc .cash{font-size:11px;line-height:1.15}
+  #mapwrap{grid-column:2;grid-row:2}
+  #cmdbar{grid-column:3;grid-row:2;height:auto;flex-direction:column;justify-content:space-around;padding:4px 0 var(--safe-b);background-size:100% 100%}
+  #cmdbar button{width:60px;height:50px}
+  #cmdbar button .lb{display:none}
+  #toast{bottom:70px}
+}
 /* 小遊戲 */
 .grid9{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px}
 .hole{font-size:30px;padding:16px 0;background:#dfe9e3;border:2px solid #8aa094;border-radius:8px}
@@ -3415,7 +3431,7 @@ UI.lottoPanel = function (p, taken) {
     const layer = $('#dlg'); layer.innerHTML = ''; layer.classList.remove('hide'); layer.classList.remove('center');
     const box = el('div', 'box paper'); const head = el('div', 'head'); head.appendChild(el('div', 'txt', `樂透彩　每張 $1,000　累積獎金 $${fmt(G.lotto.pool)}`)); box.appendChild(head);
     const body = el('div', 'body'); body.style.padding = '6px 8px 2px';
-    const W = Math.min(560, window.innerWidth - 36), S = W / 640; const BH = Math.round(225 * S);
+    const W = Math.min(420, window.innerWidth - 36), S = W / 640; const BH = Math.round(225 * S);
     const cv = this.canvasEl(Math.round(W * 2), BH * 2); cv.style.cssText = `width:${W}px;height:${BH}px;display:block;margin:0 auto;border-radius:6px;touch-action:manipulation`;
     const ctx = cv.getContext('2d'); let sel = 0, bg = null;
     const draw = () => {
