@@ -1695,9 +1695,10 @@ async function lottoVisit(p) {
   enterScene('lotto', 'RICH21');
   if (p.cash < 1000) { await UI.msg('太可惜了！您的現金不足～\n下次再來吧！'); exitScene('lotto'); return; }
   let n = 0;
-  while (true) { n = await UI.number(`哈囉！一券在手，希望無窮！\n只要一千元，就有獲得大獎的機會！\n請圈選您的幸運號碼～（1～36，累積獎金 ${fmt(G.lotto.pool)}）`, 36, 1, free[0] || 1); if (!n) break; if (taken.has(n)) { await UI.msg(`${n} 號已經有人買了！`); continue; } break; }
+  if (UI.lottoPanel) n = await UI.lottoPanel(p, taken);
+  else while (true) { n = await UI.number(`哈囉！一券在手，希望無窮！\n只要一千元，就有獲得大獎的機會！\n請圈選您的幸運號碼～（1～36，累積獎金 ${fmt(G.lotto.pool)}）`, 36, 1, free[0] || 1); if (!n) break; if (taken.has(n)) { await UI.msg(`${n} 號已經有人買了！`); continue; } break; }
   if (!n) { Sfx.sayText('下次再來吧！'); exitScene('lotto'); return; }
-  p.cash -= 1000; G.lotto.pool += 1000; G.lotto.tickets.push({ p: p.id, n });
+  p.cash -= 1000; G.lotto.pool += 1000; G.lotto.tickets.push({ p: p.id, n }); if (UI.redrawScene) UI.redrawScene();
   await UI.msg(`已投注號碼 ${n}\n拜拜！祝您中獎！`);
   exitScene('lotto');
 }
@@ -2027,6 +2028,7 @@ async function tradeMenu(p) {   // 人類：公佈欄畫面
   enterScene('trade', 'RICH20');
   try {
     while (true) {
+      if (UI.redrawScene) UI.redrawScene();
       const list = [];
       G.players.forEach(q => { if (q.bankrupt) return; boardOf(q).forEach(e => list.push({ label: `${q.name}：${boardLabel(q, e)}`, right: fmt(e.price) + ' 元', value: { q, e }, sub: `市價 ${fmt(boardMarket(e))}${q.id === p.id ? '　（我的刊登，點選撤件）' : ''}` })); });
       const v = await UI.choose(`公佈欄（您有現金 ${fmt(p.cash)}）`, list.concat([{ label: '＋ 刊登出售', value: 'post' }, { label: '離開', value: null }]));
@@ -2500,7 +2502,9 @@ const UI = {
     cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
     cv.addEventListener('wheel', e => { this.cam.s = Math.max(0.3, Math.min(1.8, this.cam.s * (e.deltaY < 0 ? 1.1 : 0.9))); this.dirty = true; e.preventDefault(); }, { passive: false });
   },
-  toScreen(x, y) { const w = this.cv.clientWidth, h = this.cv.clientHeight; return [(x - this.cam.x) * this.cam.s + w / 2, (y - this.cam.y) * this.cam.s + h / 2]; },
+  /** 鏡頭中心夾在地圖（2304×2304）範圍內，不顯示地圖外的空白（原版捲動同樣受地圖邊界限制） */
+  camC() { const w = this.cv.clientWidth, h = this.cv.clientHeight, s = this.cam.s; const hw = w / 2 / s, hh = h / 2 / s; return [hw * 2 >= 2304 ? 1152 : Math.min(Math.max(this.cam.x, hw), 2304 - hw), hh * 2 >= 2304 ? 1152 : Math.min(Math.max(this.cam.y, hh), 2304 - hh)]; },
+  toScreen(x, y) { const w = this.cv.clientWidth, h = this.cv.clientHeight; const [cx, cy] = this.camC(); return [(x - cx) * this.cam.s + w / 2, (y - cy) * this.cam.s + h / 2]; },
   cellAt(sx, sy) { let best = -1, bd = 1e9; MAP.cells.forEach((c, i) => { if (!i) return; const [x, y] = this.toScreen(c[0], c[1]); const d = Math.hypot(x - sx, y - sy); if (d < bd) { bd = d; best = i; } }); return bd < 30 * Math.max(1, this.cam.s * 2) ? best : -1; },
   tap(sx, sy) {
     const rect = this.cv.getBoundingClientRect(); const ci = this.cellAt(sx - rect.left, sy - rect.top);
@@ -2538,7 +2542,7 @@ const UI = {
     const [gx, gy] = this.toScreen(0, 0);
     ctx.drawImage(this.groundImg, 0, 0, this.groundImg.width, this.groundImg.height, gx, gy, 2304 * s, 2304 * s);
     const objs = [];
-    const vx0 = this.cam.x - w / 2 / s - 320, vx1 = this.cam.x + w / 2 / s + 320, vy0 = this.cam.y - h / 2 / s - 320, vy1 = this.cam.y + h / 2 / s + 320;
+    const [ccx, ccy] = this.camC(); const vx0 = ccx - w / 2 / s - 320, vx1 = ccx + w / 2 / s + 320, vy0 = ccy - h / 2 / s - 320, vy1 = ccy + h / 2 / s + 320;
     const inView = (x, y) => x > vx0 && x < vx1 && y > vy0 && y < vy1;
     MAP.cells.forEach((c, i) => { if (!i || !c[5] || !inView(c[0], c[1])) return; const hi = (this.pickMode && this.pickMode.cands.includes(i)) ? 1 : 0; this.drawSpr(`ic${(c[5] - 1) * 2 + hi}`, c[0], c[1]); });
     if (this.pickMode) MAP.cells.forEach((c, i) => { if (i && this.pickMode.cands.includes(i) && !c[5]) this.drawSpr('sel', c[0], c[1], 0.55); });
@@ -2731,7 +2735,8 @@ const UI = {
     if (this.composeScene && this.composeScene[name]) { this.composeScene[name].call(this, pic); return; }
     if (src) pic.style.backgroundImage = `url(${assetUrl(src)})`; else { const f = this.uiFrames.news0; pic.style.backgroundImage = 'none'; pic.innerHTML = ''; const c = document.createElement('canvas'); c.width = 440; c.height = 480; c.getContext('2d').drawImage(this.uiImg, f[0], f[1], f[2], f[3], 0, 0, 440, 480); pic.style.backgroundImage = `url(${c.toDataURL()})`; }
   },
-  exitScene() { this.sceneStack.pop(); const sc = $('#scene'); if (!this.sceneStack.length) sc.classList.add('hide'); else { const src = UIASSETS.scenes[this.sceneStack[this.sceneStack.length - 1]]; if (src) sc.querySelector('.pic').style.backgroundImage = `url(${assetUrl(src)})`; } },
+  redrawScene() { const n = this.sceneStack[this.sceneStack.length - 1]; if (n && this.composeScene && this.composeScene[n]) this.composeScene[n].call(this, $('#scene .pic')); },
+  exitScene() { this.sceneStack.pop(); const sc = $('#scene'); if (!this.sceneStack.length) sc.classList.add('hide'); else { const top = this.sceneStack[this.sceneStack.length - 1]; if (this.composeScene && this.composeScene[top]) this.composeScene[top].call(this, sc.querySelector('.pic')); else { const src = UIASSETS.scenes[top]; if (src) sc.querySelector('.pic').style.backgroundImage = `url(${assetUrl(src)})`; } } },
   /* ---------- 小遊戲 ---------- */
   async minigame(kind) {
     const p = G.players[G.cur];
@@ -3211,7 +3216,9 @@ Object.assign(UI, {
     const box = el('div'); box.style.cssText = 'position:relative;width:min(92vw,420px);aspect-ratio:1;display:flex;align-items:center;justify-content:center';
     const im = animImg(a, 'width:65%;filter:drop-shadow(0 6px 10px #000)'); box.appendChild(im);
     Sfx.play('lottoDraw'); layer.appendChild(box); await sleep(a.n * a.ms);
-    const ball = el('div', '', String(n)); ball.style.cssText = 'position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:120px;height:120px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff,#ffd54a 60%,#c98a00);display:flex;align-items:center;justify-content:center;font-size:56px;font-weight:900;color:#7a1a1a;box-shadow:0 8px 20px #000'; box.appendChild(ball);
+    // 開出的號碼以原版號碼球（Panel15#37～46）顯示：十位、個位兩顆
+    const s = String(n).padStart(2, '0'); const balls = el('div'); balls.style.cssText = 'position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;gap:6px;filter:drop-shadow(0 8px 12px #000)';
+    for (const d of s) balls.appendChild(this.sprBox(`lotd${37 + +d}`, 1.6, 116, 114)); box.appendChild(balls);
     const c = UIASSETS.anim.lotto_confetti; if (c) { const cf = animImg(c, 'position:absolute;left:50%;top:0;transform:translateX(-50%);height:100%;pointer-events:none'); box.appendChild(cf); Sfx.play('lottoBall'); }
     await sleep(1600); layer.classList.add('hide'); layer.classList.remove('center');
   },
@@ -3335,6 +3342,101 @@ UI.composeScene = {
     });
     pic.style.backgroundImage = `url(${assetUrl(UIASSETS.scenes.hospital)})`;
   },
+  /** 百貨公司（FUN_0042d299）：店員以熱點畫在 (320,240)（卡片店 Panel10#2、道具店 #18），對話泡 #15 於 (120,10) */
+  shop_card(pic) { UI.composeScene._shop.call(this, pic, 'shop_card', 'shop2', ['歡迎光臨！', '有什麼我能', '為你服務的嗎？']); },
+  shop_item(pic) { UI.composeScene._shop.call(this, pic, 'shop_item', 'shop18', ['歡迎光臨道具店！', '您要兌換', '什麼道具？']); },
+  _shop(pic, scene, clerk, lines) {
+    const c = this.canvasEl(640, 480); const ctx = c.getContext('2d');
+    const put = (key, x, y, hot) => { const f = this.uiFrames[key]; if (!f) return; ctx.drawImage(this.uiImg, f[0], f[1], f[2], f[3], hot ? x - s16(f[4]) : x, hot ? y - s16(f[5]) : y, f[2], f[3]); };
+    this.loadImg(UIASSETS.scenes[scene]).then(bg => {
+      ctx.drawImage(bg, 0, 0, 640, 480); put(clerk, 320, 240, true); put('shop15', 120, 10);
+      ctx.fillStyle = '#1a2a6a'; ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center'; lines.forEach((s, i) => ctx.fillText(s, 250, 90 + i * 28));
+      pic.style.backgroundImage = `url(${c.toDataURL()})`;
+    });
+    pic.style.backgroundImage = `url(${assetUrl(UIASSETS.scenes[scene])})`;
+  },
+  /** 公佈欄（FUN_004284be）：原版在辦公室背景 (22,66) 貼上軟木公佈欄 Panel73#0；刊登件以綠色表單 #6 加類別圖示 #9～12 示意 */
+  trade(pic) {
+    const c = this.canvasEl(640, 480); const ctx = c.getContext('2d');
+    const put = (key, x, y, s = 1) => { const f = this.uiFrames[key]; if (f) ctx.drawImage(this.uiImg, f[0], f[1], f[2], f[3], x, y, f[2] * s, f[3] * s); };
+    this.loadImg(UIASSETS.scenes.trade).then(bg => {
+      ctx.drawImage(bg, 0, 0, 640, 480); put('board0', 22, 66);
+      const posts = []; G.players.forEach(q => { if (!q.bankrupt) boardOf(q).forEach(e => posts.push({ q, e })); });
+      posts.slice(0, 9).forEach(({ q, e }, i) => {
+        const col = i % 5, row = Math.floor(i / 5); if (row && col > 3) return; const x = 44 + col * 108, y = 126 + row * 122; const s = 0.5;
+        put('board6', x, y, s); put(`board${e.type === 1 ? 9 : e.type === 3 ? 12 : (e.id >= 4000 || (G.lands[e.id - 2000] && G.lands[e.id - 2000].level)) ? 11 : 10}`, x + 96 * s - 30, y + 4, 0.75);
+        ctx.fillStyle = '#e8f0d8'; ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'left'; ctx.fillText(q.name.slice(0, 6), x + 12, y + 72);
+        ctx.font = '11px sans-serif'; const lb = boardLabel(q, e); ctx.fillText(lb.length > 8 ? lb.slice(0, 8) + '…' : lb, x + 12, y + 88); ctx.fillStyle = '#ffe070'; ctx.font = 'bold 12px sans-serif'; ctx.fillText('$' + fmt(e.price), x + 12, y + 104);
+      });
+      pic.style.backgroundImage = `url(${c.toDataURL()})`;
+    });
+    pic.style.backgroundImage = `url(${assetUrl(UIASSETS.scenes.trade)})`;
+  },
+  /** 樂透彩券行（FUN_0042f32c）：店員貓女 Panel12#1 於 (210,-5)、對話泡 #8 於 (360,20)，已售出的號碼格變暗 */
+  lotto(pic) {
+    const c = this.canvasEl(640, 480); const ctx = c.getContext('2d');
+    const put = (key, x, y) => { const f = this.uiFrames[key]; if (f) ctx.drawImage(this.uiImg, f[0], f[1], f[2], f[3], x, y, f[2], f[3]); };
+    this.loadImg(UIASSETS.scenes.lotto).then(bg => {
+      ctx.drawImage(bg, 0, 0, 640, 480);
+      const taken = new Set((G.lotto.tickets || []).map(t => t.n));
+      ctx.fillStyle = 'rgba(0,0,0,.45)'; for (let i = 0; i < 36; i++) if (taken.has(i + 1)) ctx.fillRect(30 + (i % 9) * 64 + 1, 271 + Math.floor(i / 9) * 48 + 1, 62, 46);
+      put('lot1', 210, -5); put('lot8', 360, 20);
+      ctx.fillStyle = '#1a2a6a'; ctx.font = 'bold 19px sans-serif'; ctx.textAlign = 'center';
+      ['哈囉！一券在手，', '希望無窮！', '只要一千元，就有', '獲得大獎的機會！', '請圈選您的', '幸運號碼～'].forEach((s, i) => ctx.fillText(s, 478, 72 + i * 24));
+      pic.style.backgroundImage = `url(${c.toDataURL()})`;
+    });
+    pic.style.backgroundImage = `url(${assetUrl(UIASSETS.scenes.lotto)})`;
+  },
+  /** 樂透開獎（FUN_0042f6c3／FUN_0042f417）：主持人 Panel15#1 (472,66)、舉牌 #3 (7,66) 上寫累積獎金、對話泡 #22 (300,47)、四格玩家彩券清單 */
+  lotto_draw(pic) {
+    const POS = [[16, 340], [16, 410], [328, 340], [328, 410]];
+    const c = this.canvasEl(640, 480); const ctx = c.getContext('2d');
+    const put = (key, x, y, hot) => { const f = this.uiFrames[key]; if (!f) return; ctx.drawImage(this.uiImg, f[0], f[1], f[2], f[3], hot ? x - f[4] : x, hot ? y - f[5] : y, f[2], f[3]); };
+    this.loadImg(UIASSETS.scenes.lotto_draw).then(bg => {
+      ctx.drawImage(bg, 0, 0, 640, 480);
+      put('lotd1', 472, 66); put('lotd3', 7, 66); put('lotd22', 300, 47);
+      ctx.textAlign = 'left'; ctx.font = 'bold 20px sans-serif'; ctx.fillStyle = '#b1354f'; ctx.fillText('累積獎金', 48, 212); ctx.fillStyle = '#1030d0'; ctx.fillText('$' + fmt(G.lotto.pool), 44, 246);
+      ctx.fillStyle = '#1a2a6a'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center'; ['嗨！又到了每月', '十五號樂透', '開獎時間～'].forEach((s, i) => ctx.fillText(s, 393, 92 + i * 24));
+      G.players.forEach((q, i) => {
+        if (i >= 4) return; const [x, y] = POS[i];
+        ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(x, y, 296, 60); put(`lotd${25 + q.ch}`, x + 20, y + 30, true);
+        const ns = G.lotto.tickets.filter(t => t.p === q.id).map(t => t.n).slice(0, 12);
+        ns.forEach((n, k) => { const row = ns.length > 6 ? Math.floor(k / 6) : 0, col = row ? k - 6 : k; const dx = x + (row ? 14 + 40 : 54) + col * 40, dy = y + (ns.length > 6 ? 15 : 30) + row * 30; const s = String(n).padStart(2, '0'); put(`dig${s[0]}`, dx, dy, true); put(`dig${s[1]}`, dx + 16, dy, true); });
+      });
+      pic.style.backgroundImage = `url(${c.toDataURL()})`;
+    });
+    pic.style.backgroundImage = `url(${assetUrl(UIASSETS.scenes.lotto_draw)})`;
+  },
+};
+
+/* ---------- 樂透號碼板（原版 FUN_0042f7fc：36 格 9×4，點選空號即圈選；手機版放大並加確認） ---------- */
+UI.lottoPanel = function (p, taken) {
+  return new Promise(res => {
+    const layer = $('#dlg'); layer.innerHTML = ''; layer.classList.remove('hide'); layer.classList.remove('center');
+    const box = el('div', 'box paper'); const head = el('div', 'head'); head.appendChild(el('div', 'txt', `樂透彩　每張 $1,000　累積獎金 $${fmt(G.lotto.pool)}`)); box.appendChild(head);
+    const body = el('div', 'body'); body.style.padding = '6px 8px 2px';
+    const W = Math.min(560, window.innerWidth - 36), S = W / 640; const BH = Math.round(225 * S);
+    const cv = this.canvasEl(Math.round(W * 2), BH * 2); cv.style.cssText = `width:${W}px;height:${BH}px;display:block;margin:0 auto;border-radius:6px;touch-action:manipulation`;
+    const ctx = cv.getContext('2d'); let sel = 0, bg = null;
+    const draw = () => {
+      ctx.setTransform(2 * S, 0, 0, 2 * S, 0, 0); ctx.clearRect(0, 0, 640, 225);
+      if (bg) ctx.drawImage(bg, 0, 255, 640, 225, 0, 0, 640, 225);
+      for (let i = 0; i < 36; i++) { const cx = 30 + (i % 9) * 64, cy = 16 + Math.floor(i / 9) * 48; if (taken.has(i + 1)) { ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(cx + 1, cy + 1, 62, 46); } }
+      if (sel) { const i = sel - 1; const f = this.uiFrames.lot7; ctx.drawImage(this.uiImg, f[0], f[1], f[2], f[3], 30 + (i % 9) * 64 + 32 - f[4], 16 + Math.floor(i / 9) * 48 + 24 - f[5], f[2], f[3]); }
+    };
+    this.loadImg(UIASSETS.scenes.lotto).then(im => { bg = im; draw(); }); draw();
+    const hint = el('div', 'hint', '請點選您的幸運號碼（變暗的號碼已有人購買）'); hint.style.textAlign = 'center';
+    body.appendChild(cv); body.appendChild(hint); box.appendChild(body);
+    const bar = el('div', 'btns'); const ok = el('button', 'btn ok', '請先選號'); ok.disabled = true; ok.style.opacity = '.5'; const x = el('button', 'btn exit', '下次再來'); bar.appendChild(ok); bar.appendChild(x); box.appendChild(bar);
+    cv.addEventListener('pointerdown', e => {
+      const r = cv.getBoundingClientRect(); const px = (e.clientX - r.left) * 640 / r.width, py = (e.clientY - r.top) * 225 / r.height;
+      if (px < 30 || px >= 606 || py < 16 || py >= 208) return; const n = Math.floor((py - 16) / 48) * 9 + Math.floor((px - 30) / 64) + 1;
+      if (taken.has(n)) { Sfx.play('cancel'); hint.textContent = `${n} 號已經有人買了！`; return; }
+      Sfx.play('click'); sel = n; draw(); ok.disabled = false; ok.style.opacity = '1'; ok.textContent = `購買 ${n} 號`; hint.textContent = `已圈選 ${n} 號，確定購買嗎？`;
+    });
+    ok.onclick = () => { if (!sel) return; Sfx.play('ok'); layer.classList.add('hide'); res(sel); }; x.onclick = () => { Sfx.play('cancel'); layer.classList.add('hide'); res(null); };
+    layer.appendChild(box);
+  });
 };
 
 /* ===== 原版小遊戲（依 rich4.exe 反編譯重現）：企鵝挖寶 FUN_00415215／七彩氣球 FUN_004154dc／喜從天降 FUN_004155fc
