@@ -107,7 +107,7 @@ input{font:inherit}
 .box .btns .btn{flex:1}
 .list{display:flex;flex-direction:column;gap:6px;padding:4px 12px 12px;overflow:auto;min-height:0}
 .opt{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-height:50px;padding:8px 12px;border-radius:8px;text-align:left;background:#dfe9e3 var(--row-img) left top/120px 26px repeat;border:2px solid #8aa094;font-size:17px;font-weight:700;color:#1f2a24;width:100%}
-.opt small{font-size:12px;font-weight:400;color:#4a5a52;line-height:1.3}
+.opt small{font-size:12px;font-weight:400;color:#4a5a52;line-height:1.3;align-self:stretch;text-align:left;white-space:normal}
 .opt.cancel{background:#efe3c3;border-color:#a8884a;color:#6b5a3e;justify-content:center;align-items:center}
 .opt .ico{display:inline-block;vertical-align:middle;margin-right:6px}
 .opt .rt{margin-left:auto;font-weight:400;font-size:14px}
@@ -170,6 +170,13 @@ input{font:inherit}
 .card .n{position:absolute;right:3px;bottom:1px;font-size:11px;color:#7a1a1a}
 .card.sel{outline:3px solid #ffb300}
 @media (max-width:360px){#pstrip .pc{min-width:78px}.box .txt{font-size:16px}}
+
+.alist{display:flex;flex-direction:column;gap:8px}
+.acard{background:rgba(255,255,255,.45);border:1px solid #b9a26a;border-radius:8px;padding:8px 10px}
+.acard .ahead{display:flex;align-items:center;gap:10px;font-size:16px;margin-bottom:6px}
+.acard .ahead .big{font-size:20px;font-weight:900;color:#5a2a0a}
+.acard .agrid{display:grid;grid-template-columns:auto 1fr auto 1fr;gap:3px 8px;font-size:14px;color:#333}
+.acard .agrid b{text-align:right;color:#1a2a5a}
 </style>
 </head>
 <body>
@@ -1534,7 +1541,7 @@ async function landComp(p, k) {
     // FUN_0041D1A9：每股售價取整數，上限＝min(現金÷股價, 1000, 可認購數)
     const unit = Math.max(1, Math.floor(s.price)), maxQ = Math.max(0, Math.min(Math.floor(p.cash / unit), 1000, s.avail === undefined ? s.shares : s.avail));
     if (maxQ > 0) {
-      if (p.human) { const n = await UI.number(`${d[2]}\n每股售價 ${unit}\n是否認購股份？（最高 ${maxQ} 股）`, maxQ, 100); if (n) await buyStock(p, si, Math.min(n, maxQ), true); }
+      if (p.human) { const n = await UI.number(`${d[2]}\n每股售價 ${unit}\n是否認購股份？（最高 ${maxQ} 股）`, maxQ, 100, Math.min(100, maxQ)); if (n) await buyStock(p, si, Math.min(n, maxQ), true); }
       else { const n = aiStockQty(p, unit, maxQ); if (n > 0) await buyStock(p, si, n, true); }
     }
     if (type === 10 && p._boughtNow >= 2000) { const c = giveRandomCard(p); if (c !== null) await UI.msg(`百貨公司回饋\n送您 ${CARDS[c].name}！`); }
@@ -2587,17 +2594,20 @@ const UI = {
       G.comps.forEach(k => { if (!k.i || !inView(KD(k)[0], KD(k)[1])) return; const d = KD(k); const [x, y] = this.toScreen(d[0], d[1]); ctx.strokeText(d[2], x, y + 14 * s); ctx.fillText(d[2], x, y + 14 * s); });
     }
   },
-  /** 原版對話氣泡（Data 517 bub0..3）畫在人物頭上 */
+  /** 對話氣泡（手機版：依文字量自動放大，確保可讀；樣式沿用原版藍框白底） */
   drawBubble(px, py, text) {
-    const ctx = this.ctx; const [x, y] = this.toScreen(px, py); const f = this.fr('bub0'); if (!f) return;
-    const fr = f[1]; const k = Math.max(0.6, Math.min(1, this.cam.s)); const bw = fr[2] * k, bh = fr[3] * k;
-    const bx = x - bw * 0.25, by = y - 70 * this.cam.s - bh;
-    ctx.drawImage(f[0], fr[0], fr[1], fr[2], fr[3], bx, by, bw, bh);
-    ctx.font = `bold ${Math.round(15 * k)}px "Noto Sans TC", sans-serif`; ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    const maxw = bw * 0.72; const lines = []; let cur = '';
-    for (const ch of text) { if (ctx.measureText(cur + ch).width > maxw) { lines.push(cur); cur = ch; } else cur += ch; } if (cur) lines.push(cur);
-    const lh = 17 * k; const cy = by + bh * 0.42 - (lines.length - 1) * lh / 2;
-    lines.slice(0, 3).forEach((ln, i) => ctx.fillText(ln, bx + bw * 0.5, cy + i * lh));
+    const ctx = this.ctx; const [x, y] = this.toScreen(px, py); const k = Math.max(0.75, Math.min(1, this.cam.s));
+    const fs = Math.round(15 * k); ctx.font = `bold ${fs}px "Noto Sans TC", sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const maxw = 190 * k; const lines = []; let cur = '';
+    for (const ch of text) { if (ch === '\n') { lines.push(cur); cur = ''; continue; } if (ctx.measureText(cur + ch).width > maxw) { lines.push(cur); cur = ch; } else cur += ch; } if (cur) lines.push(cur);
+    const shown = lines.slice(0, 4); const lh = fs + 4; const tw = Math.max(...shown.map(l => ctx.measureText(l).width), 40);
+    const bw = tw + 24 * k, bh = shown.length * lh + 14 * k; const W = this.cv.clientWidth, tailH = 10 * k;
+    let bx = x - bw / 2; bx = Math.max(4, Math.min(W - bw - 4, bx)); const by = Math.max(4, y - 62 * this.cam.s - bh - tailH);
+    const r = 8 * k; ctx.beginPath(); ctx.moveTo(bx + r, by); ctx.lineTo(bx + bw - r, by); ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + r); ctx.lineTo(bx + bw, by + bh - r); ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - r, by + bh);
+    const tx = Math.max(bx + 14, Math.min(bx + bw - 14, x)); ctx.lineTo(tx + 7 * k, by + bh); ctx.lineTo(x, by + bh + tailH); ctx.lineTo(tx - 7 * k, by + bh);
+    ctx.lineTo(bx + r, by + bh); ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - r); ctx.lineTo(bx, by + r); ctx.quadraticCurveTo(bx, by, bx + r, by); ctx.closePath();
+    ctx.fillStyle = 'rgba(245,249,255,.96)'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#2a4a8a'; ctx.stroke();
+    ctx.fillStyle = '#102040'; shown.forEach((ln, i) => ctx.fillText(ln, bx + bw / 2, by + 7 * k + lh / 2 + i * lh));
     this.dirty = true;
   },
   async moveStep(p) {
@@ -2683,7 +2693,7 @@ const UI = {
       [7, 8, 9].forEach(d => mk(d, '', () => digit(d))); mk('MAX', 'fn', () => { val = max; fresh = true; show(); });
       [4, 5, 6].forEach(d => mk(d, '', () => digit(d))); mk('＋' + (step >= 1000 ? step / 1000 + 'k' : step), 'fn', () => { val = Math.min(max, val + step); fresh = true; show(); });
       [1, 2, 3].forEach(d => mk(d, '', () => digit(d))); mk('－' + (step >= 1000 ? step / 1000 + 'k' : step), 'fn', () => { val = Math.max(0, val - step); fresh = true; show(); });
-      mk('C', 'fn', () => { val = 0; show(); fresh = true; }); mk(0, '', () => digit(0)); mk('⌫', 'fn', () => { val = Math.floor(val / 10); show(); }); mk('確定', 'ok', () => { if (!val) { Sfx.play('error'); lcd.textContent = '請輸入數量'; fresh = true; return; } layer.classList.add('hide'); res(val); });
+      mk('C', 'fn', () => { val = 0; show(); fresh = true; }); mk(0, '', () => digit(0)); mk('⌫', 'fn', () => { val = Math.floor(val / 10); show(); }); mk('確定', 'ok', () => { if (!val) { Sfx.play('error'); lcd.textContent = '請先輸入數字'; fresh = true; return; } layer.classList.add('hide'); res(val); });
       const bar = el('div', 'btns'); const cancel = el('button', 'btn gray', '取消'); cancel.onclick = () => { Sfx.play('cancel'); layer.classList.add('hide'); res(null); }; bar.appendChild(cancel); box.appendChild(bar);
       show(); layer.appendChild(box);
     });
@@ -2718,6 +2728,7 @@ const UI = {
     const sc = $('#scene'); const src = name === 'news' ? null : UIASSETS.scenes[name];
     this.sceneStack.push(name); sc.classList.remove('hide');
     const pic = sc.querySelector('.pic');
+    if (this.composeScene && this.composeScene[name]) { this.composeScene[name].call(this, pic); return; }
     if (src) pic.style.backgroundImage = `url(${assetUrl(src)})`; else { const f = this.uiFrames.news0; pic.style.backgroundImage = 'none'; pic.innerHTML = ''; const c = document.createElement('canvas'); c.width = 440; c.height = 480; c.getContext('2d').drawImage(this.uiImg, f[0], f[1], f[2], f[3], 0, 0, 440, 480); pic.style.backgroundImage = `url(${c.toDataURL()})`; }
   },
   exitScene() { this.sceneStack.pop(); const sc = $('#scene'); if (!this.sceneStack.length) sc.classList.add('hide'); else { const src = UIASSETS.scenes[this.sceneStack[this.sceneStack.length - 1]]; if (src) sc.querySelector('.pic').style.backgroundImage = `url(${assetUrl(src)})`; } },
@@ -2768,8 +2779,9 @@ const UI = {
   async queryMenu(p) {
     const v = await this.choose('查詢', [{ label: '資產清單', value: 'assets' }, { label: '地產清單', value: 'lands' }, { label: '股票清單', value: 'stocks' }, { label: '公司企業', value: 'comps' }, { label: '地圖上的神明／人物', value: 'npc' }, { label: '事件紀錄', value: 'log' }, { label: '遊戲說明', value: 'help' }, { label: '返回', value: null }]);
     if (!v) return;
-    const show = (scene, html) => { this.enterScene(scene); return this.dialog({ body: html, buttons: [{ label: '關閉', value: 1, cls: 'exit' }] }).then(r => { this.exitScene(); return r; }); };
-    if (v === 'assets') { const rows = alivePlayers().map(q => `<tr><td>${q.name}</td><td>${fmt(q.cash)}</td><td>${fmt(q.deposit)}</td><td>${fmt(q.loan)}</td><td>${G.lands.filter(l => l.owner === q.id + 1).length + G.comm.filter(c => c.owner === q.id + 1).length}</td><td>${fmt(assets(q))}</td></tr>`).join(''); await show('query0', `<table class="tb"><tr><th>玩家</th><th>現金</th><th>存款</th><th>貸款</th><th>土地</th><th>總資產</th></tr>${rows}</table>`); }
+    const show = (scene, html) => this.dialog({ body: html, buttons: [{ label: '關閉', value: 1, cls: 'exit' }] });   // 手機版：查詢表直接以紙張面板呈現（原版 Panel 9 查詢畫面的格子尺寸不適合手機）
+    if (v === 'assets') { const cards = alivePlayers().map(q => { const col = CHARACTERS[q.ch].color; const lands = G.lands.filter(l => l.owner === q.id + 1).length, comm = G.comm.filter(c => c.owner === q.id + 1).length; let stock = 0; G.stocks.forEach((s, i) => stock += Math.round(q.stocks[i].q * s.price)); return `<div class="acard" style="border-left:6px solid ${col}"><div class="ahead">${this.portrait(q.ch, 44).outerHTML}<div><b>${this.esc(q.name)}</b><br><small>總資產</small> <span class="big">${fmt(assets(q))}</span></div></div><div class="agrid"><span>現金</span><b>${fmt(q.cash)}</b><span>存款</span><b>${fmt(q.deposit)}</b><span>貸款</span><b>${q.loan ? fmt(q.loan) : '－'}</b><span>股票市值</span><b>${fmt(stock)}</b><span>土地／商業地</span><b>${lands}／${comm}</b><span>點券</span><b>${fmt(q.points)}</b></div></div>`; }).join(''); await show('query0', `<div class="alist">${cards}</div>`); }
+    if (false) { const rows = alivePlayers().map(q => `<tr><td>${q.name}</td><td>${fmt(q.cash)}</td><td>${fmt(q.deposit)}</td><td>${fmt(q.loan)}</td><td>${G.lands.filter(l => l.owner === q.id + 1).length + G.comm.filter(c => c.owner === q.id + 1).length}</td><td>${fmt(assets(q))}</td></tr>`).join(''); await show('query0', `<table class="tb"><tr><th>玩家</th><th>現金</th><th>存款</th><th>貸款</th><th>土地</th><th>總資產</th></tr>${rows}</table>`); }
     if (v === 'lands') { const rows = [...G.lands.filter(l => l.owner), ...G.comm.filter(c => c.owner)].map(x => x.chain !== undefined ? `<tr><td>${LD(x)[2]}</td><td>住宅</td><td>${x.chain ? '連鎖店' : BUILD_NAMES[x.level]}</td><td>${ownerName(x.owner)}</td><td>${fmt(rentOf(x, x.owner - 1))}</td><td>${x.lease ? dateStr(x.lease) : '無限期'}</td></tr>` : `<tr><td>${CD(x)[2]}</td><td>商業</td><td>${x.kind >= 0 ? FACILITY[x.kind].name + x.level + '級' : '空地'}</td><td>${ownerName(x.owner)}</td><td>${x.level ? fmt(CD(x)[5][x.level - 1] * G.priceIdx) : '-'}</td><td>${x.lease ? dateStr(x.lease) : '無限期'}</td></tr>`).join(''); await show('query1', `<table class="tb"><tr><th>地點</th><th>類型</th><th>開發</th><th>地主</th><th>收費</th><th>租期</th></tr>${rows || '<tr><td colspan=6>尚無人擁有土地</td></tr>'}</table>`); }
     if (v === 'stocks') await this.stockPanel(p, true);
     if (v === 'comps') { const rows = G.comps.map(k => k.i ? `<tr><td>${KD(k)[2]}</td><td>${COMP_TYPES[KD(k)[3]].name}</td><td>${ownerName(k.chairman)}</td><td>${fmt(k.profit)}</td><td>${fmt(KD(k)[5])}</td></tr>` : '').join(''); await show('query2', `<table class="tb"><tr><th>公司</th><th>類型</th><th>董事長</th><th>累積盈餘</th><th>資產</th></tr>${rows}</table>`); }
@@ -3288,6 +3300,41 @@ UI.stockPanel = async function (p, readonly) {
       this.updateHud();
     }
   } finally { this.exitScene(); }
+};
+
+/* ---------- 監獄／醫院場景合成（Panel 63／65：原版把惡人與坐牢／住院的角色畫進窗格與病床） ---------- */
+UI.composeScene = {
+  jail(pic) {
+    // 背景的 8 個窗格（上排 4 個：四惡人；下排 4 個：坐牢中的玩家）：匯出的場景圖窗格為黑色，直接在其上畫人物與鐵窗
+    const WIN = [[34, 25, 123, 135], [179, 25, 127, 135], [336, 25, 123, 135], [487, 25, 125, 135], [33, 184, 122, 136], [184, 184, 122, 136], [335, 184, 121, 136], [486, 184, 122, 136]];
+    const c = this.canvasEl(640, 480); const ctx = c.getContext('2d');
+    const put = (key, x, y, w, h) => { const f = this.uiFrames[key]; if (!f) return; ctx.drawImage(this.uiImg, f[0], f[1], f[2], f[3], Math.round(x + (w - f[2]) / 2), Math.round(y + h - f[3] - 2), f[2], f[3]); };
+    this.loadImg(UIASSETS.scenes.jail).then(bg => {
+      ctx.drawImage(bg, 0, 0, 640, 480);
+      const jailed = G.players.filter(p => p.status.jail > 0);
+      WIN.forEach(([x, y, w, h], i) => {
+        ctx.fillStyle = '#141414'; ctx.fillRect(x, y, w, h);
+        if (i < 4) { const v = G.villains[i]; if (v && v.state === 'jail') put(`jail${17 + i}`, x, y, w, h); }
+        else { const q = jailed[i - 4]; if (q) put(`jail${5 + q.ch}`, x, y, w, h); }
+        put('jail3', x, y - 2, w, h + 2);   // 鐵窗
+      });
+      pic.style.backgroundImage = `url(${c.toDataURL()})`;
+    });
+    pic.style.backgroundImage = `url(${assetUrl(UIASSETS.scenes.jail)})`;
+  },
+  hospital(pic) {
+    const PLATE = [[297, 61], [481, 61], [297, 181], [481, 181], [297, 301], [481, 301], [297, 421], [481, 421]];
+    const c = this.canvasEl(640, 480); const ctx = c.getContext('2d');
+    this.loadImg(UIASSETS.scenes.hospital).then(bg => {
+      ctx.drawImage(bg, 0, 0, 640, 480);
+      const put = (key, x, y) => { const f = this.uiFrames[key]; if (!f) return; ctx.drawImage(this.uiImg, f[0], f[1], f[2], f[3], x, y, f[2], f[3]); };
+      const pats = G.players.filter(p => p.status.hosp > 0).map(p => ({ key: `hosp${14 + p.ch}`, name: p.name, d: p.status.hosp }));
+      pats.forEach((pt, i) => { if (i >= 8) return; const [x, y] = PLATE[i]; put(pt.key, x + 10, y - 70); ctx.fillStyle = '#10306a'; ctx.font = 'bold 18px sans-serif'; ctx.fillText(`${pt.name}　${pt.d} 天`, x + 12, y + 29); });
+      put('hosp9', 20, 130);   // 護士
+      pic.style.backgroundImage = `url(${c.toDataURL()})`;
+    });
+    pic.style.backgroundImage = `url(${assetUrl(UIASSETS.scenes.hospital)})`;
+  },
 };
 
 /* ===== 原版小遊戲（依 rich4.exe 反編譯重現）：企鵝挖寶 FUN_00415215／七彩氣球 FUN_004154dc／喜從天降 FUN_004155fc
