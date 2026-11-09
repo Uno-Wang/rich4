@@ -2827,7 +2827,6 @@ const UI = {
     if (v === 'comps') { const rows = G.comps.map(k => k.i ? `<tr><td>${KD(k)[2]}</td><td>${COMP_TYPES[KD(k)[3]].name}</td><td>${ownerName(k.chairman)}</td><td>${fmt(k.profit)}</td><td>${fmt(KD(k)[5])}</td></tr>` : '').join(''); await show('query2', `<table class="tb"><tr><th>公司</th><th>類型</th><th>董事長</th><th>累積盈餘</th><th>資產</th></tr>${rows}</table>`); }
     if (v === 'npc') { const rows = G.npcs.map(n => `<tr><td>${NPC[n.type].icon} ${NPC[n.type].name}</td><td>${cellName(n.cell)}</td></tr>`).join('') + G.players.filter(q => q.god).map(q => `<tr><td>${NPC[q.god].icon} ${NPC[q.god].name}</td><td>附身 ${q.name}（${q.godDays}天）</td></tr>`).join('') + G.villains.map(vv => `<tr><td>${VILLAINS[vv.id].icon} ${VILLAINS[vv.id].name}</td><td>${vv.state === 'jail' ? '監獄中' : '由 ' + ownerName(vv.bailer + 1) + ' 保釋，在 ' + cellName(vv.cell)}</td></tr>`).join(''); await this.dialog({ body: `<table class="tb"><tr><th>人物</th><th>位置</th></tr>${rows}</table>`, buttons: [{ label: '關閉', value: 1, cls: 'exit' }] }); }
     if (v === 'log') await this.dialog({ body: `<div class="log">${G.log.slice(-40).reverse().map(l => `<div>${this.esc(l)}</div>`).join('')}</div>`, buttons: [{ label: '關閉', value: 1, cls: 'exit' }] });
-    if (v === 'hr') { if (!UIASSETS.hr) await this.msg('此版本未附高解析材質包。'); else { this.setHr(!this.hr); this.updateHud(); this.render(); await this.msg(`高解析材質已${this.hr ? '開啟' : '關閉'}。\n場景、卡片大圖、事件插圖、節日圖與角色頭像${this.hr ? '將使用 AI 超解析版本' : '改回原版素材'}。`); } }
     if (v === 'help') await this.helpMenu();
   },
   async helpMenu() {
@@ -2905,6 +2904,7 @@ const UI = {
     if (v === 'vol') { Music.setVolume(Music.volume >= 1 ? 0.2 : Math.min(1, Math.round((Music.volume + 0.2) * 10) / 10)); }
     if (v === 'sfx') Sfx.setEnabled(!Sfx.enabled); if (v === 'voice') Sfx.setVoice(!Sfx.voiceOn); if (v === 'synth') Music.setSynth(Music.useMp3);
     if (v === 'jukebox') { const t = await this.choose('音樂欣賞（原版 25 首 MIDI）', MIDI_NAMES.map(n => ({ label: n, value: n, sub: MIDI_SCENE[n] })).concat([{ label: '返回（恢復背景音樂）', value: null }])); if (t) { Music.scene(t); await this.dialog({ text: `♪ 播放中：${t}\n${MIDI_SCENE[t]}`, buttons: [{ label: '停止', value: 1, cls: 'exit' }] }); Music.endScene(); } }
+    if (v === 'hr') { if (!UIASSETS.hr) await this.msg('此版本未附高解析材質包。'); else { this.setHr(!this.hr); this.updateHud(); this.render(); await this.msg(`高解析材質已${this.hr ? '開啟' : '關閉'}。\n場景、卡片大圖、事件插圖、節日圖與角色頭像${this.hr ? '將使用 AI 超解析版本' : '改回原版素材'}。`); } }
     if (v === 'help') await this.helpMenu();
     if (v === 'surrender') { if (await this.confirm(`${p.name} 確定認輸投降？\n魔法屋的女巫會替您召喚死神。`)) { const t = await this.choosePlayer(p, '你要死神附身在誰身上？', others(p)); await goBankrupt(p); if (t) { await possess(t, { type: 15, cell: t.pos, host: -1 }); } } }
     if (v === 'quit') { if (await this.confirm('確定回到主選單？未存檔的進度會遺失。')) location.reload(); }
@@ -3043,6 +3043,11 @@ Object.assign(UI, {
   putF(ctx, key, x, y, w, h) { const f = this.uiFrames[key]; if (!f) return; const hi = this.hrOn() && this._hrf[key]; if (hi) ctx.drawImage(hi, x, y, w ?? f[2], h ?? f[3]); else ctx.drawImage(this.uiImg, f[0], f[1], f[2], f[3], x, y, w ?? f[2], h ?? f[3]); },
   /** 合成 canvas 做為場景背景（Blob URL，避免超大 dataURL） */
   setCanvasBg(pic, c) { const fallback = () => { pic.style.backgroundImage = `url(${c.toDataURL()})`; if (this.sceneBg) this.sceneBg(); }; try { c.toBlob(b => { if (!b) { fallback(); return; } if (pic._bgUrl) URL.revokeObjectURL(pic._bgUrl); pic._bgUrl = URL.createObjectURL(b); pic.style.backgroundImage = `url(${pic._bgUrl})`; if (this.sceneBg) this.sceneBg(); }); } catch (e) { fallback(); } },
+  /** 對話泡文字：以泡泡本體中心 (cx,cy) 為準，整段文字水平／垂直置中 */
+  bubbleText(ctx, lines, cx, cy, size = 18, color = '#1a2a6a') {
+    const lh = Math.round(size * 1.3); ctx.fillStyle = color; ctx.font = `bold ${size}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    lines.forEach((t, i) => ctx.fillText(t, cx, cy - (lines.length - 1) * lh / 2 + i * lh)); ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+  },
   /** 640×480 合成 canvas：高解析時以 2 倍像素繪製 */
   sceneCanvas(w = 640, h = 480) { const R = this.hrR(); const c = this.canvasEl(w * R, h * R); const ctx = c.getContext('2d'); ctx.scale(R, R); return [c, ctx]; },
   /** 原版描邊文字（FUN_0044fabc）：align 0 左上、1 右上、2 置中、5 左／垂直置中 */
@@ -3411,7 +3416,7 @@ UI.composeScene = {
     const put = (key, x, y, hot) => { const f = this.uiFrames[key]; if (!f) return; this.putF(ctx, key, hot ? x - s16(f[4]) : x, hot ? y - s16(f[5]) : y); };
     this.sceneBgLoad(scene).then(bg => {
       ctx.drawImage(bg, 0, 0, 640, 480); put(clerk, 320, 240, true); put('shop15', 120, 10);
-      ctx.fillStyle = '#1a2a6a'; ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center'; lines.forEach((s, i) => ctx.fillText(s, 250, 90 + i * 28));
+      this.bubbleText(ctx, lines, 120 + 118, 10 + 110, 20);   // 泡泡 shop15 本體中心 (118,110)
       this.setCanvasBg(pic, c);
     });
     pic.style.backgroundImage = `url(${assetUrl(UI.src('scenes', scene))})`;
@@ -3442,8 +3447,7 @@ UI.composeScene = {
       const taken = new Set((G.lotto.tickets || []).map(t => t.n));
       ctx.fillStyle = 'rgba(0,0,0,.45)'; for (let i = 0; i < 36; i++) if (taken.has(i + 1)) ctx.fillRect(30 + (i % 9) * 64 + 1, 271 + Math.floor(i / 9) * 48 + 1, 62, 46);
       put('lot1', 210, -5); put('lot8', 360, 20);
-      ctx.fillStyle = '#1a2a6a'; ctx.font = 'bold 19px sans-serif'; ctx.textAlign = 'center';
-      ['哈囉！一券在手，', '希望無窮！', '只要一千元，就有', '獲得大獎的機會！', '請圈選您的', '幸運號碼～'].forEach((s, i) => ctx.fillText(s, 478, 72 + i * 24));
+      this.bubbleText(ctx, ['哈囉！一券在手', '希望無窮！', '只要一千元，', '就有獲得大獎', '的機會！請圈選', '您的幸運號碼～'], 360 + 122, 20 + 96, 15);   // 泡泡 lot8 本體中心 (122,96)
       this.setCanvasBg(pic, c);
     });
     pic.style.backgroundImage = `url(${assetUrl(UI.src('scenes', 'lotto'))})`;
@@ -3457,7 +3461,7 @@ UI.composeScene = {
       ctx.drawImage(bg, 0, 0, 640, 480);
       put('lotd1', 472, 66); put('lotd3', 7, 66); put('lotd22', 300, 47);
       ctx.textAlign = 'left'; ctx.font = 'bold 20px sans-serif'; ctx.fillStyle = '#b1354f'; ctx.fillText('累積獎金', 48, 212); ctx.fillStyle = '#1030d0'; ctx.fillText('$' + fmt(G.lotto.pool), 44, 246);
-      ctx.fillStyle = '#1a2a6a'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center'; ['嗨！又到了每月', '十五號樂透', '開獎時間～'].forEach((s, i) => ctx.fillText(s, 393, 92 + i * 24));
+      this.bubbleText(ctx, ['嗨！又到了每月', '十五號樂透', '開獎時間～'], 300 + 82, 47 + 70, 17);   // 泡泡 lotd22 本體中心 (82,70)
       G.players.forEach((q, i) => {
         if (i >= 4) return; const [x, y] = POS[i];
         ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(x, y, 296, 60); put(`lotd${25 + q.ch}`, x + 20, y + 30, true);
